@@ -23,18 +23,19 @@ Supports two input formats:
 File format is detected automatically from the file extension.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import re
+from collections.abc import Iterator
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Iterator, List, Optional, Tuple
 
 import pdfplumber
-
 from ofxstatement.exceptions import ParseError
-from ofxstatement.plugin import Plugin
 from ofxstatement.parser import StatementParser
+from ofxstatement.plugin import Plugin
 from ofxstatement.statement import Statement, StatementLine
 
 from ofxstatement_consorsbank import plugin_version
@@ -133,7 +134,7 @@ CANDIDATE_TXN_RE = re.compile(r"\d{2}\.\d{2}\..*[\d.]+,\d{2}[+\-]\s*$")
 # Entries marked ○ are best-effort additions for keywords not yet observed
 # in the wild — if you encounter a misclassified transaction please open an
 # issue at https://github.com/eduralph/ofxstatement-consorsbank/issues
-TXN_TYPE_MAP: List[Tuple[str, str]] = [
+TXN_TYPE_MAP: list[tuple[str, str]] = [
     # ── Direct debits / transfers ──────────────────────────────────────────
     ("LASTSCHRIFT", "DIRECTDEBIT"),  # ★ direct debit / card via LASTSCHRIFT
     ("RUECKLASTSCHRIFT", "DIRECTDEBIT"),  # ○ returned / bounced direct debit
@@ -184,7 +185,7 @@ TXN_TYPE_MAP: List[Tuple[str, str]] = [
 ]
 
 
-def _match_txn_type(text: str, type_map: List[Tuple[str, str]]) -> str:
+def _match_txn_type(text: str, type_map: list[tuple[str, str]]) -> str:
     """Match transaction text against a type map using case-insensitive prefix matching."""
     upper = text.upper()
     for prefix, ttype in type_map:
@@ -203,7 +204,7 @@ CONSORSBANK_BIC = "CSDBDE71XXX"
 # Maps the Buchungstext column from the CSV export to OFX ttype.
 # Labels differ from the PDF keywords (German full text vs. uppercase abbreviations).
 
-CSV_TXN_TYPE_MAP: List[Tuple[str, str]] = [
+CSV_TXN_TYPE_MAP: list[tuple[str, str]] = [
     ("Lastschrift", "DIRECTDEBIT"),  # direct debit / card via Lastschrift
     ("Dauerauftrag", "REPEATPMT"),  # standing order
     ("D-Lastschrift", "REPEATPMT"),  # standing order debit (alternate)
@@ -295,7 +296,7 @@ def _parse_date(ddmm: str, stmt_year: int, stmt_month: int) -> datetime:
 class ConsorsPlugin(Plugin):
     """Consorsbank (BNP Paribas) statement plugin — supports PDF and CSV"""
 
-    def get_parser(self, filename: str) -> "StatementParser":
+    def get_parser(self, filename: str) -> StatementParser:
         if filename.lower().endswith(".csv"):
             return ConsorsCSVParser(filename)
         return ConsorsParser(filename)
@@ -331,7 +332,7 @@ class ConsorsParser(StatementParser[str]):
         # several checkouts / pip / pipx installs coexist).
         logger.info("ofxstatement-consorsbank version %s", plugin_version())
         logger.info("Parsing %s", self.fin)
-        all_lines: List[str] = []
+        all_lines: list[str] = []
         try:
             pdf_cm = pdfplumber.open(self.fin)
         except Exception as exc:
@@ -397,7 +398,7 @@ class ConsorsParser(StatementParser[str]):
         if stmt.start_balance is not None and stmt.end_balance is not None:
             total = sum(
                 (line.amount for line in stmt.lines if line.amount is not None),
-                Decimal("0"),
+                Decimal(0),
             )
             expected_end = stmt.start_balance + total
             diff = stmt.end_balance - expected_end
@@ -419,12 +420,12 @@ class ConsorsParser(StatementParser[str]):
     def split_records(self) -> Iterator[str]:
         return iter([])
 
-    def parse_record(self, _: str) -> Optional[StatementLine]:  # required by base class
+    def parse_record(self, _: str) -> StatementLine | None:  # required by base class
         return None
 
     # ── Balance population ─────────────────────────────────────────────────────
 
-    def _apply_balances(self, stmt: Statement, lines: List[str]) -> None:
+    def _apply_balances(self, stmt: Statement, lines: list[str]) -> None:
         """Set start/end balance and dates on the statement.
 
         Prefers the authoritative "Buchungssaldo alt/neu" labels on page 1 for
@@ -440,7 +441,7 @@ class ConsorsParser(StatementParser[str]):
             if not m:
                 continue
             key = m.group(1).lower()
-            amount_str: Optional[str] = m.group(2)
+            amount_str: str | None = m.group(2)
             if not amount_str:
                 for j in range(i + 1, min(i + 4, len(lines))):
                     am = AMOUNT_ONLY_RE.match(lines[j].strip())
@@ -517,7 +518,7 @@ class ConsorsParser(StatementParser[str]):
 
     # ── Header parsing ─────────────────────────────────────────────────────────
 
-    def _parse_header(self, lines: List[str]) -> None:
+    def _parse_header(self, lines: list[str]) -> None:
         """Extract IBAN, BIC, account type and statement date from the first page.
 
         Scans all lines but exits as soon as all four fields are found, so large
@@ -613,7 +614,7 @@ class ConsorsParser(StatementParser[str]):
 
     # ── Transaction parsing ────────────────────────────────────────────────────
 
-    def _parse_transactions(self, lines: List[str]) -> Iterator[StatementLine]:
+    def _parse_transactions(self, lines: list[str]) -> Iterator[StatementLine]:
         """
         Walk all lines using a simple state machine.
 
@@ -621,9 +622,9 @@ class ConsorsParser(StatementParser[str]):
         continues until the next such line, a page-header, or a balance
         checkpoint.  The block is then handed to _emit() for conversion.
         """
-        current_block: List[str] = []
+        current_block: list[str] = []
         txn_count = 0
-        self._unmatched_candidates: List[str] = []
+        self._unmatched_candidates: list[str] = []
 
         for line_num, raw_line in enumerate(lines, 1):
             line = raw_line.rstrip()
@@ -688,13 +689,13 @@ class ConsorsParser(StatementParser[str]):
 
         yield from self._flush(current_block)
 
-    def _flush(self, block: List[str]) -> Iterator[StatementLine]:
+    def _flush(self, block: list[str]) -> Iterator[StatementLine]:
         if block:
             sl = self._emit(block)
             if sl is not None:
                 yield sl
 
-    def _emit(self, block: List[str]) -> Optional[StatementLine]:
+    def _emit(self, block: list[str]) -> StatementLine | None:
         """Convert a raw transaction block to a StatementLine."""
         if not block:
             return None
@@ -865,8 +866,8 @@ class ConsorsCSVParser(StatementParser[str]):
         logger.debug("CSV: IBAN %s", masked)
 
         # Row 4: balance ; currency ; date ; ...
-        end_balance: Optional[Decimal] = None
-        end_date: Optional[datetime] = None
+        end_balance: Decimal | None = None
+        end_date: datetime | None = None
         if len(lines) > 4:
             parts = lines[4].split(";")
             try:
@@ -893,7 +894,7 @@ class ConsorsCSVParser(StatementParser[str]):
         logger.info("CSV done: %d transaction(s)", len(stmt.lines))
         return stmt
 
-    def _parse_row(self, raw_line: str, row_idx: int = 0) -> Optional[StatementLine]:
+    def _parse_row(self, raw_line: str, row_idx: int = 0) -> StatementLine | None:
         parts = raw_line.split(";")
         if len(parts) < 9:
             return None
@@ -924,12 +925,12 @@ class ConsorsCSVParser(StatementParser[str]):
         ttype = _match_txn_type(buchungstext, CSV_TXN_TYPE_MAP)
 
         # ATM detection: same VISA…SB / BLZ / SB-terminal heuristics as PDF
-        if ttype == "DIRECTDEBIT":
-            if ATM_INDICATOR_RE.search(verwendungszweck) or ATM_INDICATOR_RE.search(
-                counterparty
-            ):
-                ttype = "ATM"
-                logger.debug("ATM detected (CSV) on %s", date.strftime("%d.%m"))
+        if ttype == "DIRECTDEBIT" and (
+            ATM_INDICATOR_RE.search(verwendungszweck)
+            or ATM_INDICATOR_RE.search(counterparty)
+        ):
+            ttype = "ATM"
+            logger.debug("ATM detected (CSV) on %s", date.strftime("%d.%m"))
 
         if ttype == "OTHER":
             logger.warning(
@@ -951,5 +952,5 @@ class ConsorsCSVParser(StatementParser[str]):
     def split_records(self) -> Iterator[str]:
         return iter([])
 
-    def parse_record(self, _: str) -> Optional[StatementLine]:  # required by base class
+    def parse_record(self, _: str) -> StatementLine | None:  # required by base class
         return None

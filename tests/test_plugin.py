@@ -15,19 +15,19 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """Tests for ofxstatement-consorsbank plugin."""
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from ofxstatement.exceptions import ParseError
+
 from ofxstatement_consorsbank.plugin import (
-    ConsorsParser,
+    TXN_ROW_RE,
     ConsorsCSVParser,
+    ConsorsParser,
     _parse_amount,
     _parse_date,
-    TXN_ROW_RE,
 )
 
 # ── Synthetic statement text ───────────────────────────────────────────────────
@@ -126,9 +126,11 @@ def statement():
 
 def test_pdf_parse_logs_plugin_version_first(caplog):
     """First INFO line records the plugin version, for install diagnostics."""
-    with patch("pdfplumber.open", return_value=_make_mock_pdf([PAGE_1])):
-        with caplog.at_level("INFO", logger="ofxstatement_consorsbank.plugin"):
-            ConsorsParser("fake.pdf").parse()
+    with (
+        patch("pdfplumber.open", return_value=_make_mock_pdf([PAGE_1])),
+        caplog.at_level("INFO", logger="ofxstatement_consorsbank.plugin"),
+    ):
+        ConsorsParser("fake.pdf").parse()
     assert caplog.records, "no log records captured"
     first = caplog.records[0]
     assert "ofxstatement-consorsbank version" in first.getMessage()
