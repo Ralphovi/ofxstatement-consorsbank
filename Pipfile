@@ -11,6 +11,8 @@ ofxstatement-consorsbank = {editable = true,path = "."}
 [dev-packages]
 mypy = "*"
 pytest = "*"
+pytest-cov = "*"
 black = "*"
-ruff = "*"
+ruff = ">=0.17,<0.18"
 build = "*"
+twine = "*"
