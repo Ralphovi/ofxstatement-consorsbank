@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Depot documents are now converted to OFX investment statements
+  (`INVSTMTRS`, account = Depotnummer, securities by ISIN):
+  Orderabrechnung KAUF/VERKAUF → `BUYSTOCK`/`SELLSTOCK` (`BUYDEBT`/`SELLDEBT`
+  for bonds), Ertragsgutschrift → `INCOME`/`DIV`, Zinsgutschrift →
+  `INCOME`/`INTEREST`, Vorabpauschale → `INVEXPENSE` when tax was debited.
+  Both the 2019/2020 and the current order layout are supported.
+- Stable FITIDs across re-issued documents: orders use the order number (a
+  `KAUF - KORREKTUR` collides with its original), income uses ISIN +
+  Schlusstag + Bestand (a *Neuabrechnung* replaces the original, payouts for
+  separate custody positions stay distinct).
+
 ## [0.2.4] - 2026-05-08
 
 ### Developer tooling

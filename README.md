@@ -29,6 +29,29 @@ Quarterly and annual depot statements (`QUARTALSDEPOTAUSZUG`,
 `JAHRESDEPOTAUSZUG`) have a different format and are not supported — the
 plugin will log a clear warning and produce no transactions for those files.
 
+### Depot documents (investment transactions)
+
+Single-event depot documents are detected automatically and converted to an
+OFX **investment** statement (`INVSTMTRS`, account = Depotnummer, securities
+identified by ISIN):
+
+| Document                         | OFX transaction                              |
+|----------------------------------|----------------------------------------------|
+| Orderabrechnung KAUF / VERKAUF   | `BUYSTOCK` / `SELLSTOCK` (`BUYDEBT` / `SELLDEBT` for bonds) |
+| Ertragsgutschrift                | `INCOME` / `DIV` (withholding = Brutto − Netto) |
+| Zinsgutschrift (bond coupon)     | `INCOME` / `INTEREST`                        |
+| Vorabpauschale                   | `INVEXPENSE` if tax was debited, otherwise no transaction |
+
+Fees are the difference between Kurswert and the booked total (Stückzins on
+bonds is kept out of the fees and noted in the memo). Bond prices are given
+per 1 EUR nominal, so `units × unit_price` equals the Kurswert.
+
+Transaction IDs are stable across re-issued documents: orders use the
+Consorsbank order number, so a `KAUF - KORREKTUR` carries the same FITID as
+the original; income uses ISIN + Schlusstag + Bestand, so a *Neuabrechnung*
+replaces the original while two payouts for the same fund held in different
+custody locations stay distinct. Import the newest document last.
+
 ### Transaction types handled
 
 Entries marked ★ are confirmed against real statements (2016–2026).
