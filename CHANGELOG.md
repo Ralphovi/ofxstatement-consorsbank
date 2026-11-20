@@ -17,7 +17,10 @@
 - Fail-closed checks: the booked total must equal Kurswert ± Stückzins ± fee
   lines (fees are no longer the remainder, so a deducted tax is rejected
   instead of reported as a fee); booking direction must match KAUF/VERKAUF;
-  depot number and Bestand are required; non-EUR documents are rejected.
+  depot number, Bestand and (income/Vorabpauschale) Schlusstag are
+  required; non-EUR documents, income booked zulasten, credited
+  Vorabpauschale and units/prices beyond 5 decimals are rejected; units ×
+  price must match the Kurswert.
 
 ## [0.2.4] - 2026-05-08
 

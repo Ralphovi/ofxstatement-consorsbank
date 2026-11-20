@@ -66,8 +66,8 @@ KAUF AM01.02.2023 UM09:30:00 SPARPLAN NR.264286795.001
 Bezeichnung WKN ISIN
 XTR.EUROSTOXX501D DBX1EU LU0274211217
 Einheit Umsatz
-ST 2,80000
-PreisproAnteil 41,428571EUR NETTO
+ST 2,57715
+PreisproAnteil 45,010900EUR NETTO
 Kurswert 116,00EUR
 zulastenKonto-Nr.0000099999116,00EUR
 """
@@ -470,3 +470,26 @@ def test_income_booked_zulasten_is_rejected():
 def test_depot_header_after_line_80_is_detected():
     lines = ["Kontoauszug padding"] * 100 + ORDER_NEW.splitlines()
     assert detect_depot_document(lines) == "order"
+
+
+def test_values_that_ofx_would_round_are_rejected():
+    with pytest.raises(ParseError, match="5 decimals"):
+        _parse(ORDER_NEW.replace("ST 6,77371", "ST 6,773711"))
+    with pytest.raises(ParseError, match="5 decimals"):
+        _parse(ORDER_NEW.replace("43,815000EUR", "43,815004EUR"))
+
+
+def test_schlusstag_is_required_for_income_and_vorab():
+    with pytest.raises(ParseError, match="Schlusstag"):
+        _parse(DIVIDEND.replace("Schlusstag23.05.2023", ""))
+    with pytest.raises(ParseError, match="Schlusstag"):
+        _parse(VORAB_TAXED.replace("Schlusstag01.01.2024", ""))
+
+
+def test_credited_vorabpauschale_is_rejected():
+    text = VORAB_ZERO.replace(
+        "Nettozugunsten IBAN DE00760300800000099999 0,00EUR",
+        "Nettozugunsten IBAN DE00760300800000099999 1,23EUR",
+    )
+    with pytest.raises(ParseError, match="credited"):
+        _parse(text)

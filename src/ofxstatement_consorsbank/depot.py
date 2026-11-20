@@ -123,6 +123,8 @@ VALUTA_RE = re.compile(r"Valuta" + _DATE)
 SCHLUSSTAG_RE = re.compile(r"Schlusstag" + _DATE)
 DOC_DATE_RE = re.compile(r"Datum:" + _DATE)
 BESTAND_RE = re.compile(r"Bestand(?:Kupontag)?" + _QTY + r"(Stück|EUR)")
+# Precision of units and prices in ofxstatement's OFX writer.
+_OFX_QUANTUM = Decimal("0.00001")
 # pdfplumber lines longer than this are boilerplate, never the security row.
 _MAX_SECURITY_ROW = 200
 DEPOT_NR_RE = re.compile(r"Depotnummer:?(\d{10})")
@@ -293,6 +295,16 @@ class DepotDocument:
                 f"{units * unit_price} does not match Kurswert {kurswert}",
             )
 
+        # ofxstatement writes units and prices with 5 decimals; refuse values
+        # that would be rounded (real documents: 5 and 6 with a trailing 0).
+        for what, value in (("units", units), ("price", unit_price)):
+            if value != value.quantize(_OFX_QUANTUM) or value <= 0:
+                raise ParseError(
+                    0,
+                    f"{self.filename}: order {order_nr}: {what} cannot be "
+                    "written to OFX (5 decimals) without rounding",
+                )
+
         trade_date = _date(f"{day} {clock}", "%d.%m.%Y %H:%M:%S")
 
         if total == 0:
@@ -365,11 +377,12 @@ class DepotDocument:
         valuta = VALUTA_RE.search(self.compact)
         doc_date = self._require(DOC_DATE_RE, "Datum")
         date = _date(valuta.group(1) if valuta else doc_date.group(1))
-        schluss = SCHLUSSTAG_RE.search(self.compact)
+        # Schlusstag is part of the FITID; a fallback date would make the
+        # ID depend on what one extraction happened to find.
+        ref_date = self._require(SCHLUSSTAG_RE, "Schlusstag").group(1)
         qty, unit = self._bestand()
         withheld = brutto - netto
 
-        ref_date = schluss.group(1) if schluss else date.strftime("%d.%m.%Y")
         line = InvestStatementLine(
             id=_hash_id(kind, isin, ref_date, qty, str(brutto)),
             date=date,
@@ -401,6 +414,13 @@ class DepotDocument:
             direction, netto = "", Decimal(0)
         doc_date = _date(self._require(DOC_DATE_RE, "Datum").group(1))
         qty, unit = self._bestand()
+        if netto != 0 and direction != "zulasten":
+            raise ParseError(
+                0,
+                f"{self.filename}: Vorabpauschale credited (Netto zugunsten) — "
+                "only debited tax is supported",
+            )
+        schluss_date = self._require(SCHLUSSTAG_RE, "Schlusstag").group(1)
         if netto == 0:
             logger.info(
                 "Vorabpauschale %s: no tax debited (covered by Freistellungsauftrag) "
@@ -409,18 +429,17 @@ class DepotDocument:
             )
             return None
         valuta = VALUTA_RE.search(self.compact)
-        schluss = SCHLUSSTAG_RE.search(self.compact)
         line = InvestStatementLine(
             id=_hash_id(
                 "VORAB",
                 isin,
-                schluss.group(1) if schluss else doc_date.isoformat(),
+                schluss_date,
                 qty,
             ),
             date=_date(valuta.group(1)) if valuta else doc_date,
             memo=f"Steuer Vorabpauschale {name} ({wkn}), Bestand {qty} {unit}",
             trntype="INVEXPENSE",
             security_id=isin,
-            amount=-netto if direction == "zulasten" else netto,
+            amount=-netto,
         )
         return line

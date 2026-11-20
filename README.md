@@ -70,7 +70,11 @@ A document is rejected (`ParseError`) instead of converted when:
   example a sale with Kapitalertragsteuer deducted;
 - the booking direction does not match the side (`KAUF` must be
   `zulasten`, `VERKAUF` `zugunsten`);
-- the depot number, or on income/Vorabpauschale the Bestand, is missing;
+- the depot number, or on income/Vorabpauschale the Bestand or Schlusstag,
+  is missing;
+- income is booked `Netto zulasten`, or a Vorabpauschale is credited
+  (`Netto zugunsten` other than 0,00);
+- units or prices have more decimals than the OFX writer keeps (5);
 - units × price differs from the Kurswert by more than half a cent;
 - a Vorabpauschale has no Netto line but a Kapitalertrag other than 0,00;
 - it contains amounts in a currency other than EUR (foreign-currency
