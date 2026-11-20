@@ -28,13 +28,22 @@ pdfplumber drops most spaces in these documents ("PreisproAnteil"), so all
 field matching runs on a whitespace-free copy of the text.  Only the security
 name / WKN / ISIN row is read line-based, because the name needs its spaces.
 
-Transaction IDs are chosen so that re-issued documents collide with the
-original on purpose:
+Transaction IDs:
 
-  orders   – Consorsbank order number (a "KAUF - KORREKTUR" reuses it)
-  income   – hash of ISIN, Schlusstag and Bestand (a "Neuabrechnung" reuses
-             them; two payouts for the same ISIN held in two custody
-             locations differ in Bestand and stay distinct)
+  orders   – Consorsbank order number
+  income   – hash of ISIN, Schlusstag and Bestand (two payouts for the same
+             ISIN held in two custody locations differ in Bestand)
+  Vorabp.  – hash of ISIN, Schlusstag and Bestand
+
+A re-downloaded document therefore yields the same ID and is skipped by
+importers that deduplicate on it.  The re-issues seen so far are Sparplan
+executions first booked with 0,00 EUR and later sent as "KAUF - KORREKTUR";
+the 0,00 document yields no transaction, so the correction is the only one.
+
+Fail-closed rules: the booked total must equal Kurswert ± Stückzins ± the
+listed fee lines (Grundgebühr, Provision, Handelsplatzkosten), the booking
+direction must match KAUF/VERKAUF, the depot number and Bestand must be
+present, and documents with non-EUR amounts are rejected.
 """
 
 from __future__ import annotations
@@ -72,10 +81,12 @@ _DATE = r"(\d{2}\.\d{2}\.\d{4})"
 
 # Real corrections (2024) repeat the plain "KAUF AM" header and say KORREKTUR
 # only in the file name; an optional "- KORREKTUR" marker is accepted as well.
+# Bounded gaps (.{0,N}?) keep searches linear on crafted text: the compact
+# text is one long line.
 ORDER_HDR_RE = re.compile(
     r"ORDERABRECHNUNG(KAUF|VERKAUF)(?:-?KORREKTUR)?AM"
     + _DATE
-    + r"UM(\d{2}:\d{2}:\d{2}).*?NR\.(\d+\.\d+)"
+    + r"UM(\d{2}:\d{2}:\d{2}).{0,80}?NR\.(\d+\.\d+)"
 )
 UNITS_RE = re.compile(r"EinheitUmsatz(?:Fälligkeit)?(ST|EUR)" + _NUM)
 PRICE_RE = re.compile(r"(?:Kurs|PreisproAnteil)" + _NUM + r"(EUR|%)")
@@ -86,7 +97,16 @@ TOTAL_NEW_RE = re.compile(r"zu(lasten|gunsten)Konto-Nr\.\d{10}" + _AMT + r"EUR")
 TOTAL_OLD_RE = re.compile(
     r"Wert\d{2}\.\d{2}\.\d{4}EUR" + _AMT + r"zu(lasten|gunsten)Konto-Nr\."
 )
-STUECKZINS_RE = re.compile(r"Stückzins.*?Tage" + _AMT + r"EUR")
+STUECKZINS_RE = re.compile(r"Stückzins.{0,80}?Tage" + _AMT + r"EUR")
+# Fee lines between Kurswert and the booked total; "EUR" before (2019/2020
+# layout) or after the amount.
+FEE_RE = re.compile(
+    r"(?:abzgl\.)?(Grundgebühr|Provision|Handelsplatzkosten)(?:EUR)?"
+    + _AMT
+    + r"(?:EUR)?"
+)
+# An amount directly followed by a currency code other than EUR.
+FOREIGN_CCY_RE = re.compile(r"\d,\d+(?!EUR)([A-Z]{3})")
 
 INCOME_HDR_RE = re.compile(r"(Ertragsgutschrift|Zinsgutschrift)")
 VORAB_HDR_RE = re.compile(r"VorabpauschaleWertpapierbezeichnung")
@@ -96,6 +116,8 @@ VALUTA_RE = re.compile(r"Valuta" + _DATE)
 SCHLUSSTAG_RE = re.compile(r"Schlusstag" + _DATE)
 DOC_DATE_RE = re.compile(r"Datum:" + _DATE)
 BESTAND_RE = re.compile(r"Bestand(?:Kupontag)?" + _QTY + r"(Stück|EUR)")
+# pdfplumber lines longer than this are boilerplate, never the security row.
+_MAX_SECURITY_ROW = 200
 DEPOT_NR_RE = re.compile(r"Depotnummer:?(\d{10})")
 
 SECURITY_ROW_RE = re.compile(r"^(.*?)\s+(\S{6})\s+([A-Z]{2}[A-Z0-9]{9}\d)\s*$")
@@ -114,6 +136,11 @@ def _dec(raw: str) -> Decimal:
 
 def _date(raw: str) -> datetime:
     return datetime.strptime(raw, "%d.%m.%Y")
+
+
+def _qty_key(raw: str) -> str:
+    """Canonical form of a German quantity, so "143" == "143,00000"."""
+    return format(_dec(raw).normalize(), "f")
 
 
 def _hash_id(*parts: str) -> str:
@@ -153,15 +180,22 @@ class DepotDocument:
         for i, line in enumerate(self.lines):
             if SECURITY_HDR_RE.search(line):
                 for nxt in self.lines[i + 1 : i + 3]:
+                    if len(nxt) > _MAX_SECURITY_ROW:
+                        continue
                     m = SECURITY_ROW_RE.match(nxt.strip())
                     if m:
                         return m.group(1).strip(), m.group(2), m.group(3)
         raise ParseError(0, f"{self.filename}: security name/WKN/ISIN row not found")
 
+    def _bestand(self) -> tuple[str, str]:
+        """(canonical quantity, unit) of the holding the document refers to."""
+        qty, unit = self._require(BESTAND_RE, "Bestand").groups()
+        return _qty_key(qty), unit
+
     def _statement(self, line: InvestStatementLine | None) -> Statement:
-        m = DEPOT_NR_RE.search(self.compact)
+        m = self._require(DEPOT_NR_RE, "Depotnummer")
         stmt = Statement(
-            account_id=m.group(1) if m else "UNKNOWN",
+            account_id=m.group(1),
             bank_id=CONSORSBANK_BIC,
             currency="EUR",
             account_type="INVESTMENT",
@@ -179,6 +213,13 @@ class DepotDocument:
     # ── document kinds ─────────────────────────────────────────────────────
 
     def parse(self, kind: str) -> Statement:
+        m = FOREIGN_CCY_RE.search(self.compact)
+        if m:
+            raise ParseError(
+                0,
+                f"{self.filename}: amounts in {m.group(1)} — only EUR depot "
+                "documents are supported",
+            )
         if kind == "order":
             return self._statement(self._order())
         if kind == "income":
@@ -187,7 +228,7 @@ class DepotDocument:
             return self._statement(self._vorab())
         raise ValueError(kind)
 
-    def _order(self) -> InvestStatementLine:
+    def _order(self) -> InvestStatementLine | None:
         hdr = self._require(ORDER_HDR_RE, "order header (KAUF/VERKAUF AM …)")
         side, day, clock, order_nr = hdr.groups()
         name, wkn, isin = self._security()
@@ -197,51 +238,60 @@ class DepotDocument:
         price_raw, price_unit = self._require(PRICE_RE, "price").groups()
         kurswert = _dec(self._require(KURSWERT_RE, "Kurswert").group(1))
 
+        m_kw = KURSWERT_RE.search(self.compact)
+        assert m_kw is not None  # found by _require above
         m_new = TOTAL_NEW_RE.search(self.compact)
         m_old = TOTAL_OLD_RE.search(self.compact)
         if m_new:
-            total = _dec(m_new.group(2))
+            direction, total = m_new.group(1), _dec(m_new.group(2))
+            total_at = m_new.start()
         elif m_old:
-            total = _dec(m_old.group(1))
+            total, direction = _dec(m_old.group(1)), m_old.group(2)
+            total_at = m_old.start()
         else:
             raise ParseError(
                 0, f"{self.filename}: booked total (zulasten/zugunsten) not found"
             )
+
+        is_buy = side == "KAUF"
+        if direction != ("lasten" if is_buy else "gunsten"):
+            raise ParseError(
+                0,
+                f"{self.filename}: {side} booked zu{direction} — direction does "
+                "not match the order side",
+            )
+
+        if total == 0:
+            # Sparplan executions are sometimes booked with 0,00 EUR and later
+            # re-issued as "KAUF - KORREKTUR" with the same order number and
+            # the real debit.  Emit nothing, so the correction is the only
+            # transaction for this order.
+            logger.warning(
+                "%s: order %s books 0,00 EUR — no transaction; import the "
+                "'KAUF - KORREKTUR' with the same order number",
+                self.filename,
+                order_nr,
+            )
+            return None
 
         accrued = Decimal(0)
         m_sz = STUECKZINS_RE.search(self.compact)
         if m_sz:
             accrued = _dec(m_sz.group(1))
 
-        is_buy = side == "KAUF"
+        fee_area = self.compact[m_kw.end() : total_at]
+        fees = sum((_dec(m.group(2)) for m in FEE_RE.finditer(fee_area)), Decimal(0))
+        expected = kurswert + accrued + fees if is_buy else kurswert + accrued - fees
+        if expected != total:
+            raise ParseError(
+                0,
+                f"{self.filename}: order {order_nr} books {total} EUR, but "
+                f"Kurswert {kurswert} + Stückzins {accrued} "
+                f"{'+' if is_buy else '-'} fees {fees} = {expected} — "
+                "unrecognised deduction (e.g. tax)",
+            )
+
         is_bond = unit_kind == "EUR"
-        if is_buy:
-            fees = total - kurswert - accrued
-        else:
-            fees = kurswert + accrued - total
-        if total == 0:
-            # Seen on Sparplan executions later re-issued as "KAUF - KORREKTUR"
-            # with the same order number and the real debit.  Fall back to the
-            # Kurswert so the line stays valid; the correction (same FITID)
-            # supersedes it downstream.
-            logger.warning(
-                "%s: order %s books 0,00 EUR — using Kurswert %s; expect a "
-                "'KAUF - KORREKTUR' with the same order number",
-                self.filename,
-                order_nr,
-                kurswert,
-            )
-            total = kurswert + accrued if is_buy else kurswert - accrued
-            fees = Decimal(0)
-        if fees < 0:
-            logger.warning(
-                "%s: order %s has negative fees %s (Kurswert %s, total %s)",
-                self.filename,
-                order_nr,
-                fees,
-                kurswert,
-                total,
-            )
 
         memo = f"{side} {name} ({wkn}) Order {order_nr}"
         if accrued:
@@ -294,15 +344,14 @@ class DepotDocument:
         doc_date = self._require(DOC_DATE_RE, "Datum")
         date = _date(valuta.group(1) if valuta else doc_date.group(1))
         schluss = SCHLUSSTAG_RE.search(self.compact)
-        bestand = BESTAND_RE.search(self.compact)
+        qty, unit = self._bestand()
         withheld = brutto - netto
 
         ref_date = schluss.group(1) if schluss else date.strftime("%d.%m.%Y")
         line = InvestStatementLine(
-            id=_hash_id(isin, ref_date, bestand.group(1) if bestand else ""),
+            id=_hash_id(isin, ref_date, qty),
             date=date,
-            memo=f"{kind} {name} ({wkn})"
-            + (f", Bestand {bestand.group(1)} {bestand.group(2)}" if bestand else ""),
+            memo=f"{kind} {name} ({wkn}), Bestand {qty} {unit}",
             trntype="INCOME",
             trntype_detailed="INTEREST" if kind == "Zinsgutschrift" else "DIV",
             security_id=isin,
@@ -329,12 +378,16 @@ class DepotDocument:
             return None
         valuta = VALUTA_RE.search(self.compact)
         schluss = SCHLUSSTAG_RE.search(self.compact)
+        qty, unit = self._bestand()
         line = InvestStatementLine(
             id=_hash_id(
-                "VORAB", isin, schluss.group(1) if schluss else doc_date.isoformat()
+                "VORAB",
+                isin,
+                schluss.group(1) if schluss else doc_date.isoformat(),
+                qty,
             ),
             date=_date(valuta.group(1)) if valuta else doc_date,
-            memo=f"Steuer Vorabpauschale {name} ({wkn})",
+            memo=f"Steuer Vorabpauschale {name} ({wkn}), Bestand {qty} {unit}",
             trntype="INVEXPENSE",
             security_id=isin,
             amount=-netto if direction == "zulasten" else netto,

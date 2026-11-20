@@ -22,6 +22,8 @@ including the dropped spaces and (cid:NNN) glyph placeholders.
 from datetime import datetime
 from decimal import Decimal
 
+import pytest
+from ofxstatement.exceptions import ParseError
 from ofxstatement.ofx import OfxWriter
 
 from ofxstatement_consorsbank.depot import DepotDocument, detect_depot_document
@@ -235,11 +237,11 @@ def test_bond_buy():
     assert "Stückzins 42.95" in line.memo
 
 
-def test_zero_booked_order_falls_back_to_kurswert():
-    _, stmt = _parse(ORDER_ZERO_BOOKED)
-    (line,) = stmt.invest_lines
-    assert line.id == "ord274766086.001"  # same FITID as the Korrektur
-    assert line.amount == Decimal("-296.79")
+def test_zero_booked_order_yields_no_transaction():
+    # The "KAUF - KORREKTUR" with the real debit is the only transaction.
+    kind, stmt = _parse(ORDER_ZERO_BOOKED)
+    assert kind == "order"
+    assert stmt.invest_lines == []
 
 
 def test_dividend():
@@ -296,7 +298,8 @@ def test_correction_with_plain_header_keeps_order_fitid():
     # the original and only differ in the booked total.
     _, orig = _parse(ORDER_ZERO_BOOKED)
     _, corr = _parse(ORDER_NEW)
-    assert orig.invest_lines[0].id == corr.invest_lines[0].id
+    assert orig.invest_lines == []
+    assert corr.invest_lines[0].id == "ord274766086.001"
     assert corr.invest_lines[0].amount == Decimal("-296.79")
 
 
@@ -313,7 +316,7 @@ def test_interest_id_uses_integer_nominal():
     _, a = _parse(INTEREST)
     _, b = _parse(INTEREST.replace("1.000EUR 04.07.2025", "2.000EUR 04.07.2025"))
     assert a.invest_lines[0].id != b.invest_lines[0].id
-    assert "Bestand 1.000 EUR" in a.invest_lines[0].memo
+    assert "Bestand 1000 EUR" in a.invest_lines[0].memo
 
 
 def test_dividend_id_uses_whole_share_holdings():
@@ -322,3 +325,75 @@ def test_dividend_id_uses_whole_share_holdings():
     _, b = _parse(DIVIDEND.replace("318,19647", "144"))
     assert a.invest_lines[0].id != b.invest_lines[0].id
     assert "Bestand 143 Stück" in a.invest_lines[0].memo
+
+
+def test_bestand_is_canonical_in_ids():
+    _, a = _parse(DIVIDEND.replace("318,19647", "143"))
+    _, b = _parse(DIVIDEND.replace("318,19647", "143,00000"))
+    assert a.invest_lines[0].id == b.invest_lines[0].id
+
+
+def test_income_without_bestand_is_rejected():
+    with pytest.raises(ParseError, match="Bestand"):
+        _parse(DIVIDEND.replace("318,19647St(cid:252)ck", ""))
+
+
+def test_vorabpauschale_id_distinguishes_custody_positions():
+    _, a = _parse(VORAB_TAXED)
+    _, b = _parse(VORAB_TAXED.replace("6,68822", "3,00000"))
+    assert a.invest_lines[0].id != b.invest_lines[0].id
+
+
+def test_sale_with_tax_deduction_is_rejected():
+    taxed = SELL.replace(
+        "zugunstenKonto-Nr.0000099999 6.658,40EUR",
+        "Kapitalertragsteuer 100,00EUR\nzugunstenKonto-Nr.0000099999 6.558,40EUR",
+    )
+    with pytest.raises(ParseError, match="unrecognised deduction"):
+        _parse(taxed)
+
+
+def test_fees_come_from_fee_lines():
+    _, stmt = _parse(BOND)
+    assert stmt.invest_lines[0].fees == Decimal("10.90")
+    _, stmt = _parse(ORDER_OLD_WITH_FEE)
+    assert stmt.invest_lines[0].fees == Decimal("3.95")
+
+
+@pytest.mark.parametrize(
+    "text, old, new",
+    [
+        (ORDER_NEW, "zulastenKonto", "zugunstenKonto"),
+        (SELL, "zugunstenKonto", "zulastenKonto"),
+    ],
+)
+def test_booking_direction_must_match_side(text, old, new):
+    with pytest.raises(ParseError, match="direction"):
+        _parse(text.replace(old, new))
+
+
+def test_missing_depot_number_is_rejected():
+    with pytest.raises(ParseError, match="Depotnummer"):
+        _parse(ORDER_NEW.replace("Depotnummer 0000012345\n", ""))
+
+
+@pytest.mark.parametrize(
+    "text, old, new",
+    [
+        (ORDER_NEW, "43,815000EUR", "43,815000USD"),
+        (DIVIDEND, "Brutto 56,03EUR", "Brutto 60,00USD\nBrutto 56,03EUR"),
+    ],
+)
+def test_foreign_currency_documents_are_rejected(text, old, new):
+    with pytest.raises(ParseError, match="USD"):
+        _parse(text.replace(old, new))
+
+
+def test_repeated_header_prefixes_stay_fast():
+    import time
+
+    junk = "ORDERABRECHNUNG\nKAUF AM08.09.2023 UM09:30:21 " * 20000
+    lines = (junk + ORDER_NEW).splitlines()
+    start = time.perf_counter()
+    DepotDocument(lines, "test.pdf").parse("order")
+    assert time.perf_counter() - start < 2

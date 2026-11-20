@@ -42,15 +42,33 @@ identified by ISIN):
 | Zinsgutschrift (bond coupon)     | `INCOME` / `INTEREST`                        |
 | Vorabpauschale                   | `INVEXPENSE` if tax was debited, otherwise no transaction |
 
-Fees are the difference between Kurswert and the booked total (Stückzins on
-bonds is kept out of the fees and noted in the memo). Bond prices are given
-per 1 EUR nominal, so `units × unit_price` equals the Kurswert.
+Fees are the sum of the fee lines (Grundgebühr, Provision,
+Handelsplatzkosten); Stückzins on bonds is kept out of the fees and noted in
+the memo. Bond prices are given per 1 EUR nominal, so `units × unit_price`
+equals the Kurswert.
 
-Transaction IDs are stable across re-issued documents: orders use the
-Consorsbank order number, so a `KAUF - KORREKTUR` carries the same FITID as
-the original; income uses ISIN + Schlusstag + Bestand, so a *Neuabrechnung*
-replaces the original while two payouts for the same fund held in different
-custody locations stay distinct. Import the newest document last.
+Transaction IDs: orders use the Consorsbank order number; income and taxed
+Vorabpauschale use a hash of ISIN + Schlusstag + Bestand, so payouts for the
+same fund held in different custody locations stay distinct (unless both
+positions hold exactly the same quantity). Importing the
+same document twice yields the same FITID, which importers skip.
+
+Re-issued orders: Consorsbank has booked some Sparplan executions with
+0,00 EUR and later sent a `KAUF - KORREKTUR` with the same order number and
+the real debit. The 0,00 document yields **no** transaction (a warning is
+logged), so the correction is the only transaction for that order, whatever
+the import order. A re-issued document whose content differs from one
+already imported (not observed so far) is skipped by FITID-deduplicating
+importers; check the warning log and your depot balances.
+
+A document is rejected (`ParseError`) instead of converted when:
+- the booked total is not Kurswert ± Stückzins ± the fee lines — for
+  example a sale with Kapitalertragsteuer deducted;
+- the booking direction does not match the side (`KAUF` must be
+  `zulasten`, `VERKAUF` `zugunsten`);
+- the depot number, or on income/Vorabpauschale the Bestand, is missing;
+- it contains amounts in a currency other than EUR (foreign-currency
+  orders and dividends are not supported yet).
 
 ### Transaction types handled
 
