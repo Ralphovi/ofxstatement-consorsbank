@@ -643,3 +643,15 @@ def test_eleven_digit_depot_number_is_rejected():
 def test_payout_ids_use_128_bits():
     _, stmt = _parse(DIVIDEND)
     assert len(stmt.invest_lines[0].id) == 32
+
+
+def test_depot_number_on_line_after_label():
+    _, stmt = _parse(
+        ORDER_NEW.replace("Depotnummer 0000012345", "Depotnummer\n0000012345")
+    )
+    assert stmt.account_id == "0000012345"
+
+
+def test_depot_number_followed_by_digit_line():
+    _, stmt = _parse(ORDER_NEW.replace("0000012345", "0000012345\n0000099999/01"))
+    assert stmt.account_id == "0000012345"

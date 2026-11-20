@@ -151,8 +151,9 @@ BESTAND_RE = re.compile(r"Bestand(?:Kupontag)?" + _QTY + r"(Stück|EUR)")
 _OFX_QUANTUM = Decimal("0.00001")
 # pdfplumber lines longer than this are boilerplate, never the security row.
 _MAX_SECURITY_ROW = 200
-# Matched per line: the next line starts with digits, which the compact text
-# glues straight onto the number.
+# Matched on the newline-preserving text: the next line starts with digits,
+# which the compact text glues straight onto the number.  \s* still allows
+# the value on the line after the label.
 DEPOT_NR_RE = re.compile(r"Depotnummer:?\s*(\d{10})(?!\d)")
 
 SECURITY_ROW_RE = re.compile(r"^(.*?)\s+(\S{6})\s+([A-Z]{2}[A-Z0-9]{9}\d)\s*$")
@@ -305,7 +306,7 @@ class DepotDocument:
         return _qty_key(qty), unit
 
     def _statement(self, line: InvestStatementLine | None) -> Statement:
-        numbers = {m.group(1) for ln in self.lines for m in DEPOT_NR_RE.finditer(ln)}
+        numbers = {m.group(1) for m in DEPOT_NR_RE.finditer("\n".join(self.lines))}
         if len(numbers) > 1:
             raise ParseError(0, f"{self.filename}: conflicting values for Depotnummer")
         if not numbers:
