@@ -114,10 +114,9 @@ FOREIGN_CCY_RE = re.compile(
     r"\d,\d+(?!EUR)([A-Z]{3})|(?<![A-Z])(?!EUR)([A-Z]{3})\d{1,3}(?:\.\d{3})*,\d"
 )
 
-INCOME_HDR_RE = re.compile(r"(Ertragsgutschrift|Zinsgutschrift)")
 # Re-issued payouts are headed "Ertragsgutschrift / Neuabrechnung".
 INCOME_DETECT_RE = re.compile(
-    r"(?:Ertragsgutschrift|Zinsgutschrift)(?:/Neuabrechnung)?Wertpapierbezeichnung"
+    r"(Ertragsgutschrift|Zinsgutschrift)(?:/Neuabrechnung)?Wertpapierbezeichnung"
 )
 # Words that only depot documents contain (none of 667 real account
 # statements has them).  A document with these but no recognised header is
@@ -214,14 +213,30 @@ class DepotDocument:
             raise ParseError(0, f"{self.filename}: could not find {what}")
         return matches[0]
 
+    def _optional(self, regex: re.Pattern[str], what: str) -> re.Match[str] | None:
+        """First match of a field; every further occurrence must agree.
+
+        A field that appears with different values (a second order header,
+        depot number, Schlusstag, …) makes the document ambiguous, so it is
+        rejected rather than resolved to whichever value comes first.
+        """
+        matches = list(regex.finditer(self.compact))
+        if len({m.groups() for m in matches}) > 1:
+            raise ParseError(0, f"{self.filename}: conflicting values for {what}")
+        return matches[0] if matches else None
+
     def _require(self, regex: re.Pattern[str], what: str) -> re.Match[str]:
-        m = regex.search(self.compact)
+        m = self._optional(regex, what)
         if not m:
             raise ParseError(0, f"{self.filename}: could not find {what}")
         return m
 
     def _security(self) -> tuple:
-        """(name, wkn, isin) from the row below the 'Bezeichnung WKN ISIN' header."""
+        """(name, wkn, isin) from the row below the 'Bezeichnung WKN ISIN' header.
+
+        Every such row in the document must name the same security.
+        """
+        found = set()
         for i, line in enumerate(self.lines):
             if SECURITY_HDR_RE.search(line):
                 for nxt in self.lines[i + 1 : i + 3]:
@@ -229,8 +244,15 @@ class DepotDocument:
                         continue
                     m = SECURITY_ROW_RE.match(nxt.strip())
                     if m:
-                        return m.group(1).strip(), m.group(2), m.group(3)
-        raise ParseError(0, f"{self.filename}: security name/WKN/ISIN row not found")
+                        found.add((m.group(1).strip(), m.group(2), m.group(3)))
+                        break
+        if len(found) > 1:
+            raise ParseError(0, f"{self.filename}: more than one security named")
+        if not found:
+            raise ParseError(
+                0, f"{self.filename}: security name/WKN/ISIN row not found"
+            )
+        return found.pop()
 
     def _bestand(self) -> tuple[str, str]:
         """(canonical quantity, unit) of the holding the document refers to."""
@@ -286,7 +308,7 @@ class DepotDocument:
         price_raw, price_unit = self._require(PRICE_RE, "price").groups()
         kurswert = _dec(self._require(KURSWERT_RE, "Kurswert").group(1))
 
-        m_kw = KURSWERT_RE.search(self.compact)
+        m_kw = self._require(KURSWERT_RE, "Kurswert")
         assert m_kw is not None  # found by _require above
         totals = list(TOTAL_NEW_RE.finditer(self.compact)) + list(
             TOTAL_OLD_RE.finditer(self.compact)
@@ -355,7 +377,7 @@ class DepotDocument:
             return None
 
         accrued = Decimal(0)
-        m_sz = STUECKZINS_RE.search(self.compact)
+        m_sz = self._optional(STUECKZINS_RE, "Stückzins")
         if m_sz:
             accrued = _dec(m_sz.group(1))
 
@@ -399,7 +421,8 @@ class DepotDocument:
         return line
 
     def _income(self) -> InvestStatementLine:
-        kind = self._require(INCOME_HDR_RE, "Ertrags-/Zinsgutschrift").group(1)
+        # The kind comes from the structural header that detection matched.
+        kind = self._require(INCOME_DETECT_RE, "Ertrags-/Zinsgutschrift").group(1)
         name, wkn, isin = self._security()
         brutto = _dec(self._require_unique(BRUTTO_RE, "Brutto").group(1))
         direction, netto_raw = self._require_unique(NETTO_RE, "Netto").groups()
@@ -412,12 +435,13 @@ class DepotDocument:
             raise ParseError(
                 0, f"{self.filename}: {kind} Netto exceeds Brutto — not supported"
             )
-        valuta = VALUTA_RE.search(self.compact)
+        valuta = self._optional(VALUTA_RE, "Valuta")
         doc_date = self._require(DOC_DATE_RE, "Datum")
         date = _date(valuta.group(1) if valuta else doc_date.group(1))
         # Schlusstag is part of the FITID; a fallback date would make the
         # ID depend on what one extraction happened to find.
         ref_date = self._require(SCHLUSSTAG_RE, "Schlusstag").group(1)
+        _date(ref_date)
         qty, unit = self._bestand()
         withheld = brutto - netto
 
@@ -462,6 +486,7 @@ class DepotDocument:
                 "only debited tax is supported",
             )
         schluss_date = self._require(SCHLUSSTAG_RE, "Schlusstag").group(1)
+        _date(schluss_date)
         if netto == 0:
             logger.info(
                 "Vorabpauschale %s: no tax debited (covered by Freistellungsauftrag) "
@@ -469,7 +494,7 @@ class DepotDocument:
                 isin,
             )
             return None
-        valuta = VALUTA_RE.search(self.compact)
+        valuta = self._optional(VALUTA_RE, "Valuta")
         line = InvestStatementLine(
             id=_hash_id(
                 "VORAB",

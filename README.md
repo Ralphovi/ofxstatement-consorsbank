@@ -75,7 +75,10 @@ A document that contains `ORDERABRECHNUNG` or `Wertpapierbezeichnung` but
 no recognised header is rejected rather than parsed as a bank statement.
 
 A document is rejected (`ParseError`) instead of converted when:
-- it has more than one booked total, or income has Netto above Brutto;
+- a field it reads (order header, depot number, security, Kurswert, units,
+  price, Schlusstag, Bestand, Datum, Valuta, …) appears with different
+  values, or it has more than one booked total / Brutto / Netto;
+- income has Netto above Brutto;
 - the booked total is not Kurswert ± Stückzins ± the fee lines — for
   example a sale with Kapitalertragsteuer deducted;
 - the booking direction does not match the side (`KAUF` must be

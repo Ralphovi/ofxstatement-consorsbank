@@ -548,3 +548,34 @@ def test_vorabpauschale_with_two_netto_lines_is_rejected():
     text = VORAB_ZERO + "Nettozulasten IBAN DE00760300800000099999 1,23EUR\n"
     with pytest.raises(ParseError, match="× Netto"):
         _parse(text)
+
+
+@pytest.mark.parametrize(
+    "text, extra",
+    [
+        (
+            ORDER_NEW,
+            "ORDERABRECHNUNG\nKAUF AM08.09.2023 UM09:30:21 SPARPLAN NR.111111111.001\n",
+        ),
+        (ORDER_NEW, "Depotnummer 0000099999\n"),
+        (ORDER_NEW, "Bezeichnung WKN ISIN\nOTHER FUND A1B2C3 IE00B4L5Y983\n"),
+        (DIVIDEND, "Schlusstag01.01.2020\n"),
+        (DIVIDEND, "Bestand\n1,00000St(cid:252)ck\n"),
+        (DIVIDEND, "Datum: 01.01.2020\n"),
+        (VORAB_2020, "Kapitalertrag 5,00EUR\n"),
+    ],
+)
+def test_conflicting_field_values_are_rejected(text, extra):
+    with pytest.raises(ParseError, match="conflicting|more than one"):
+        _parse(text + extra)
+
+
+def test_income_kind_comes_from_the_header():
+    text = "Zinsgutschrift erwähnt\n" + DIVIDEND
+    _, stmt = _parse(text)
+    assert stmt.invest_lines[0].trntype_detailed == "DIV"
+
+
+def test_invalid_schlusstag_is_rejected():
+    with pytest.raises(ParseError, match="invalid date"):
+        _parse(DIVIDEND.replace("Schlusstag23.05.2023", "Schlusstag31.02.2023"))
