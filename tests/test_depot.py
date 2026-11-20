@@ -289,3 +289,36 @@ def test_ofx_output_contains_invest_transactions():
     assert "<BUYDEBT>" in ofx
     assert "<UNIQUEID>DE0001135226</UNIQUEID>" in ofx
     assert "<ACCTID>0000012345</ACCTID>" in ofx
+
+
+def test_correction_with_plain_header_keeps_order_fitid():
+    # Real "KAUF - KORREKTUR" PDFs (2024) print the same "KAUF AM" header as
+    # the original and only differ in the booked total.
+    _, orig = _parse(ORDER_ZERO_BOOKED)
+    _, corr = _parse(ORDER_NEW)
+    assert orig.invest_lines[0].id == corr.invest_lines[0].id
+    assert corr.invest_lines[0].amount == Decimal("-296.79")
+
+
+def test_correction_marker_in_header():
+    text = ORDER_NEW.replace("KAUF AM08.09.2023", "KAUF - KORREKTUR AM08.09.2023")
+    _, stmt = _parse(text)
+    (line,) = stmt.invest_lines
+    assert line.id == "ord274766086.001"
+    assert line.trntype == "BUYSTOCK"
+    assert line.amount == Decimal("-296.79")
+
+
+def test_interest_id_uses_integer_nominal():
+    _, a = _parse(INTEREST)
+    _, b = _parse(INTEREST.replace("1.000EUR 04.07.2025", "2.000EUR 04.07.2025"))
+    assert a.invest_lines[0].id != b.invest_lines[0].id
+    assert "Bestand 1.000 EUR" in a.invest_lines[0].memo
+
+
+def test_dividend_id_uses_whole_share_holdings():
+    # 2022 statements print whole holdings without decimals ("143Stück").
+    _, a = _parse(DIVIDEND.replace("318,19647", "143"))
+    _, b = _parse(DIVIDEND.replace("318,19647", "144"))
+    assert a.invest_lines[0].id != b.invest_lines[0].id
+    assert "Bestand 143 Stück" in a.invest_lines[0].memo

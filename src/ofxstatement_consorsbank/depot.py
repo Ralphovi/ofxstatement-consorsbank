@@ -65,10 +65,15 @@ _CID_MAP = {
 
 _AMT = r"(\d{1,3}(?:\.\d{3})*,\d{2})"  # German money amount, 2 decimals
 _NUM = r"(\d{1,3}(?:\.\d{3})*,\d+)"  # German number, any decimals
+# German quantity whose decimals are optional: holdings print "143 Stück" or
+# "1.000 EUR" when whole.
+_QTY = r"(\d{1,3}(?:\.\d{3})*(?:,\d+)?)"
 _DATE = r"(\d{2}\.\d{2}\.\d{4})"
 
+# Real corrections (2024) repeat the plain "KAUF AM" header and say KORREKTUR
+# only in the file name; an optional "- KORREKTUR" marker is accepted as well.
 ORDER_HDR_RE = re.compile(
-    r"ORDERABRECHNUNG(KAUF|VERKAUF)AM"
+    r"ORDERABRECHNUNG(KAUF|VERKAUF)(?:-?KORREKTUR)?AM"
     + _DATE
     + r"UM(\d{2}:\d{2}:\d{2}).*?NR\.(\d+\.\d+)"
 )
@@ -90,7 +95,7 @@ NETTO_RE = re.compile(r"Netto(zugunsten|zulasten)IBAN(?:DE\d{20})?" + _AMT + r"E
 VALUTA_RE = re.compile(r"Valuta" + _DATE)
 SCHLUSSTAG_RE = re.compile(r"Schlusstag" + _DATE)
 DOC_DATE_RE = re.compile(r"Datum:" + _DATE)
-BESTAND_RE = re.compile(r"Bestand(?:Kupontag)?" + _NUM + r"(Stück|EUR)")
+BESTAND_RE = re.compile(r"Bestand(?:Kupontag)?" + _QTY + r"(Stück|EUR)")
 DEPOT_NR_RE = re.compile(r"Depotnummer:?(\d{10})")
 
 SECURITY_ROW_RE = re.compile(r"^(.*?)\s+(\S{6})\s+([A-Z]{2}[A-Z0-9]{9}\d)\s*$")
