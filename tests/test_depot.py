@@ -454,12 +454,12 @@ def test_untaxed_vorabpauschale_still_needs_bestand():
         _parse(VORAB_ZERO.replace("6,68822St(cid:252)ck", ""))
 
 
-def test_income_ids_differ_by_kind_and_gross():
+def test_income_ids_differ_by_kind_not_by_amount():
     _, a = _parse(DIVIDEND)
     _, b = _parse(DIVIDEND.replace("Brutto 56,03EUR", "Brutto 57,03EUR"))
     _, c = _parse(DIVIDEND.replace("Ertragsgutschrift", "Zinsgutschrift"))
-    ids = {x.invest_lines[0].id for x in (a, b, c)}
-    assert len(ids) == 3
+    assert a.invest_lines[0].id == b.invest_lines[0].id  # re-issue: same ID
+    assert a.invest_lines[0].id != c.invest_lines[0].id
 
 
 def test_income_booked_zulasten_is_rejected():
@@ -493,3 +493,40 @@ def test_credited_vorabpauschale_is_rejected():
     )
     with pytest.raises(ParseError, match="credited"):
         _parse(text)
+
+
+def test_bank_statement_mentioning_payout_words_is_not_a_depot_document():
+    lines = [
+        "Kontoauszug 1 Konto-Nr. 0000099999 Blatt 1 / 2",
+        "01.02. Gutschrift Ertragsgutschrift Vorabpauschale 1,00+",
+    ]
+    assert detect_depot_document(lines) is None
+
+
+def test_unrecognised_depot_layout_is_rejected_not_parsed_as_bank():
+    lines = ["Kontoauszug", "ORDERABRECHNUNG", "TAUSCH AM01.02.2024", "Wertpapier"]
+    with pytest.raises(ParseError, match="layout is not recognised"):
+        detect_depot_document(lines)
+
+
+def test_neuabrechnung_is_detected():
+    text = DIVIDEND.replace(
+        "Ertragsgutschrift\n", "Ertragsgutschrift / Neuabrechnung\n"
+    )
+    kind, stmt = _parse(text)
+    assert kind == "income"
+    assert stmt.invest_lines[0].id == _parse(DIVIDEND)[1].invest_lines[0].id
+
+
+def test_second_booked_total_is_rejected():
+    text = ORDER_NEW.replace(
+        "Kurswert 296,79EUR\n",
+        "Kurswert 296,79EUR\nzulastenKonto-Nr.0000099999 0,00EUR\n",
+    )
+    with pytest.raises(ParseError, match="booked totals"):
+        _parse(text)
+
+
+def test_netto_above_brutto_is_rejected():
+    with pytest.raises(ParseError, match="exceeds Brutto"):
+        _parse(DIVIDEND.replace("Brutto 56,03EUR", "Brutto 40,00EUR"))

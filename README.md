@@ -65,7 +65,17 @@ the import order. A re-issued document whose content differs from one
 already imported (not observed so far) is skipped by FITID-deduplicating
 importers; check the warning log and your depot balances.
 
+Re-issued payouts are headed `Ertragsgutschrift / Neuabrechnung` and keep
+the payout's FITID (ISIN + Schlusstag + Bestand, not the amount). Since 2024
+Consorsbank has issued 11 of 23 Ertragsgutschriften this way, and its
+archive holds only the Neuabrechnung, not the original. Two payouts of the
+same kind, ISIN, Schlusstag and Bestand would share a FITID.
+
+A document that contains `ORDERABRECHNUNG` or `Wertpapierbezeichnung` but
+no recognised header is rejected rather than parsed as a bank statement.
+
 A document is rejected (`ParseError`) instead of converted when:
+- it has more than one booked total, or income has Netto above Brutto;
 - the booked total is not Kurswert ± Stückzins ± the fee lines — for
   example a sale with Kapitalertragsteuer deducted;
 - the booking direction does not match the side (`KAUF` must be

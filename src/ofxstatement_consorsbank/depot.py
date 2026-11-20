@@ -115,6 +115,15 @@ FOREIGN_CCY_RE = re.compile(
 )
 
 INCOME_HDR_RE = re.compile(r"(Ertragsgutschrift|Zinsgutschrift)")
+# Re-issued payouts are headed "Ertragsgutschrift / Neuabrechnung".
+INCOME_DETECT_RE = re.compile(
+    r"(?:Ertragsgutschrift|Zinsgutschrift)(?:/Neuabrechnung)?Wertpapierbezeichnung"
+)
+# Words that only depot documents contain (none of 667 real account
+# statements has them).  A document with these but no recognised header is
+# rejected rather than handed to the bank-statement parser.
+DEPOT_MARKER_RE = re.compile(r"ORDERABRECHNUNG|Wertpapierbezeichnung")
+ORDER_DETECT_RE = re.compile(r"ORDERABRECHNUNG(?:KAUF|VERKAUF)(?:-?KORREKTUR)?AM\d")
 VORAB_HDR_RE = re.compile(r"VorabpauschaleWertpapierbezeichnung")
 KAPITALERTRAG_RE = re.compile(r"Kapitalertrag" + _AMT + r"EUR")
 BRUTTO_RE = re.compile(r"Brutto" + _AMT + r"EUR")
@@ -167,13 +176,19 @@ def _hash_id(*parts: str) -> str:
 
 def detect_depot_document(lines: list[str]) -> str | None:
     """Return 'order', 'income' or 'vorab' for supported depot documents."""
+    # The whole document is scanned, but only for structural headers: a bank
+    # statement may mention these words in a booking text.
     compact = re.sub(r"\s+", "", _clean("\n".join(lines)))
-    if "ORDERABRECHNUNG" in compact:
+    if ORDER_DETECT_RE.search(compact):
         return "order"
     if VORAB_HDR_RE.search(compact):
         return "vorab"
-    if INCOME_HDR_RE.search(compact) and "Wertpapierbezeichnung" in compact:
+    if INCOME_DETECT_RE.search(compact):
         return "income"
+    if DEPOT_MARKER_RE.search(compact):
+        raise ParseError(
+            0, "looks like a depot document, but its layout is not recognised"
+        )
     return None
 
 
@@ -261,6 +276,13 @@ class DepotDocument:
 
         m_kw = KURSWERT_RE.search(self.compact)
         assert m_kw is not None  # found by _require above
+        totals = list(TOTAL_NEW_RE.finditer(self.compact)) + list(
+            TOTAL_OLD_RE.finditer(self.compact)
+        )
+        if len(totals) > 1:
+            raise ParseError(
+                0, f"{self.filename}: {len(totals)} booked totals — expected one"
+            )
         m_new = TOTAL_NEW_RE.search(self.compact)
         m_old = TOTAL_OLD_RE.search(self.compact)
         if m_new:
@@ -374,6 +396,10 @@ class DepotDocument:
                 0, f"{self.filename}: {kind} with Netto zulasten is not supported"
             )
         netto = _dec(netto_raw)
+        if netto > brutto:
+            raise ParseError(
+                0, f"{self.filename}: {kind} Netto exceeds Brutto — not supported"
+            )
         valuta = VALUTA_RE.search(self.compact)
         doc_date = self._require(DOC_DATE_RE, "Datum")
         date = _date(valuta.group(1) if valuta else doc_date.group(1))
@@ -384,7 +410,7 @@ class DepotDocument:
         withheld = brutto - netto
 
         line = InvestStatementLine(
-            id=_hash_id(kind, isin, ref_date, qty, str(brutto)),
+            id=_hash_id(kind, isin, ref_date, qty),
             date=date,
             memo=f"{kind} {name} ({wkn}), Bestand {qty} {unit}",
             trntype="INCOME",
