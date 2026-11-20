@@ -108,7 +108,11 @@ FEE_RE = re.compile(
     + r"(?:EUR)?"
 )
 # An amount directly followed by a currency code other than EUR.
-FOREIGN_CCY_RE = re.compile(r"\d,\d+(?!EUR)([A-Z]{3})")
+# An amount with a currency code other than EUR directly after ("10,00USD")
+# or before ("USD10,00") it.
+FOREIGN_CCY_RE = re.compile(
+    r"\d,\d+(?!EUR)([A-Z]{3})|(?<![A-Z])(?!EUR)([A-Z]{3})\d{1,3}(?:\.\d{3})*,\d"
+)
 
 INCOME_HDR_RE = re.compile(r"(Ertragsgutschrift|Zinsgutschrift)")
 VORAB_HDR_RE = re.compile(r"VorabpauschaleWertpapierbezeichnung")
@@ -161,7 +165,7 @@ def _hash_id(*parts: str) -> str:
 
 def detect_depot_document(lines: list[str]) -> str | None:
     """Return 'order', 'income' or 'vorab' for supported depot documents."""
-    compact = re.sub(r"\s+", "", _clean("\n".join(lines[:80])))
+    compact = re.sub(r"\s+", "", _clean("\n".join(lines)))
     if "ORDERABRECHNUNG" in compact:
         return "order"
     if VORAB_HDR_RE.search(compact):
@@ -231,7 +235,8 @@ class DepotDocument:
         if m:
             raise ParseError(
                 0,
-                f"{self.filename}: amounts in {m.group(1)} — only EUR depot "
+                f"{self.filename}: amounts in {m.group(1) or m.group(2)} — only "
+                "EUR depot "
                 "documents are supported",
             )
         if kind == "order":
@@ -275,6 +280,21 @@ class DepotDocument:
                 "not match the order side",
             )
 
+        is_bond = unit_kind == "EUR"
+        units = _dec(units_raw)
+        # Bonds are quoted in % of nominal; express the price per 1 EUR nominal
+        # so units × unit_price == Kurswert like for shares.
+        price = _dec(price_raw)
+        unit_price = price / 100 if price_unit == "%" else price
+        if abs(units * unit_price - kurswert) > Decimal("0.005"):
+            raise ParseError(
+                0,
+                f"{self.filename}: order {order_nr}: units × price "
+                f"{units * unit_price} does not match Kurswert {kurswert}",
+            )
+
+        trade_date = _date(f"{day} {clock}", "%d.%m.%Y %H:%M:%S")
+
         if total == 0:
             # Sparplan executions are sometimes booked with 0,00 EUR and later
             # re-issued as "KAUF - KORREKTUR" with the same order number and
@@ -305,19 +325,6 @@ class DepotDocument:
                 "unrecognised deduction (e.g. tax)",
             )
 
-        is_bond = unit_kind == "EUR"
-        units = _dec(units_raw)
-        # Bonds are quoted in % of nominal; express the price per 1 EUR nominal
-        # so units × unit_price == Kurswert like for shares.
-        price = _dec(price_raw)
-        unit_price = price / 100 if price_unit == "%" else price
-        if abs(units * unit_price - kurswert) > Decimal("0.005"):
-            raise ParseError(
-                0,
-                f"{self.filename}: order {order_nr}: units × price "
-                f"{units * unit_price} does not match Kurswert {kurswert}",
-            )
-
         memo = f"{side} {name} ({wkn}) Order {order_nr}"
         if is_bond:
             memo += ", Anleihe (Nominal EUR)"
@@ -331,7 +338,7 @@ class DepotDocument:
 
         line = InvestStatementLine(
             id=f"ord{order_nr}",
-            date=_date(f"{day} {clock}", "%d.%m.%Y %H:%M:%S"),
+            date=trade_date,
             memo=memo,
             trntype=trntype,
             trntype_detailed=detailed,
@@ -350,9 +357,11 @@ class DepotDocument:
         name, wkn, isin = self._security()
         brutto = _dec(self._require(BRUTTO_RE, "Brutto").group(1))
         direction, netto_raw = self._require(NETTO_RE, "Netto").groups()
+        if direction != "zugunsten":
+            raise ParseError(
+                0, f"{self.filename}: {kind} with Netto zulasten is not supported"
+            )
         netto = _dec(netto_raw)
-        if direction == "zulasten":
-            netto = -netto
         valuta = VALUTA_RE.search(self.compact)
         doc_date = self._require(DOC_DATE_RE, "Datum")
         date = _date(valuta.group(1) if valuta else doc_date.group(1))
@@ -362,7 +371,7 @@ class DepotDocument:
 
         ref_date = schluss.group(1) if schluss else date.strftime("%d.%m.%Y")
         line = InvestStatementLine(
-            id=_hash_id(isin, ref_date, qty),
+            id=_hash_id(kind, isin, ref_date, qty, str(brutto)),
             date=date,
             memo=f"{kind} {name} ({wkn}), Bestand {qty} {unit}",
             trntype="INCOME",
@@ -391,6 +400,7 @@ class DepotDocument:
                 )
             direction, netto = "", Decimal(0)
         doc_date = _date(self._require(DOC_DATE_RE, "Datum").group(1))
+        qty, unit = self._bestand()
         if netto == 0:
             logger.info(
                 "Vorabpauschale %s: no tax debited (covered by Freistellungsauftrag) "
@@ -400,7 +410,6 @@ class DepotDocument:
             return None
         valuta = VALUTA_RE.search(self.compact)
         schluss = SCHLUSSTAG_RE.search(self.compact)
-        qty, unit = self._bestand()
         line = InvestStatementLine(
             id=_hash_id(
                 "VORAB",

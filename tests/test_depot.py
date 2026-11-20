@@ -435,3 +435,38 @@ def test_logs_carry_no_amounts(caplog):
     text = " ".join(r.getMessage() for r in caplog.records)
     for amount in ("6658", "6681", "136", "49,125", "49.125", "56.03", "50.00"):
         assert amount not in text
+
+
+def test_currency_code_before_amount_is_rejected():
+    with pytest.raises(ParseError, match="USD"):
+        _parse(DIVIDEND.replace("Brutto 56,03EUR", "USD 60,00\nBrutto 56,03EUR"))
+
+
+def test_zero_booked_order_is_still_validated():
+    with pytest.raises(ParseError, match="Kurswert"):
+        _parse(ORDER_ZERO_BOOKED.replace("ST 6,77371", "ST 7,77371"))
+    with pytest.raises(ParseError, match="invalid date"):
+        _parse(ORDER_ZERO_BOOKED.replace("UM09:30:21", "UM29:30:21"))
+
+
+def test_untaxed_vorabpauschale_still_needs_bestand():
+    with pytest.raises(ParseError, match="Bestand"):
+        _parse(VORAB_ZERO.replace("6,68822St(cid:252)ck", ""))
+
+
+def test_income_ids_differ_by_kind_and_gross():
+    _, a = _parse(DIVIDEND)
+    _, b = _parse(DIVIDEND.replace("Brutto 56,03EUR", "Brutto 57,03EUR"))
+    _, c = _parse(DIVIDEND.replace("Ertragsgutschrift", "Zinsgutschrift"))
+    ids = {x.invest_lines[0].id for x in (a, b, c)}
+    assert len(ids) == 3
+
+
+def test_income_booked_zulasten_is_rejected():
+    with pytest.raises(ParseError, match="zulasten"):
+        _parse(DIVIDEND.replace("Nettozugunsten", "Nettozulasten"))
+
+
+def test_depot_header_after_line_80_is_detected():
+    lines = ["Kontoauszug padding"] * 100 + ORDER_NEW.splitlines()
+    assert detect_depot_document(lines) == "order"
