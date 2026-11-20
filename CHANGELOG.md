@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-11-21
 
 ### Added
 - Depot documents are now converted to OFX investment statements
@@ -21,6 +21,15 @@
   required; non-EUR documents, income booked zulasten, credited
   Vorabpauschale and units/prices beyond 5 decimals are rejected; units ×
   price must match the Kurswert.
+
+### Security
+- Numbers are bounded before `Decimal` arithmetic (at most 12 integer and
+  8 decimal digits; real documents use 5 and 6), and `decimal` errors become
+  `ParseError`, so a crafted document cannot overflow or exhaust memory.
+- Security names and WKNs with XML-illegal control characters are rejected
+  instead of crashing the OFX writer.
+- An 11-digit depot number is rejected instead of being truncated to 10.
+- Payout FITIDs use 128 bits of SHA-256 (32 hex characters) instead of 64.
 
 ## [0.2.4] - 2026-05-08
 
