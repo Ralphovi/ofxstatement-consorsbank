@@ -90,8 +90,9 @@ A document is rejected (`ParseError`) instead of converted when:
 - units or prices have more decimals than the OFX writer keeps (5);
 - units × price differs from the Kurswert by more than half a cent;
 - a Vorabpauschale has no Netto line but a Kapitalertrag other than 0,00;
-- it contains amounts in a currency other than EUR (foreign-currency
-  orders and dividends are not supported yet);
+- it contains amounts in a listed foreign currency (USD, GBP, CHF, JPY, …;
+  foreign-currency orders and dividends are not supported yet);
+- an order other than a Sparplan purchase books 0,00 EUR;
 - the resulting line fails ofxstatement's own validation.
 
 ### Transaction types handled

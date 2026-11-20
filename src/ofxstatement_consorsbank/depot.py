@@ -110,8 +110,14 @@ FEE_RE = re.compile(
 # An amount directly followed by a currency code other than EUR.
 # An amount with a currency code other than EUR directly after ("10,00USD")
 # or before ("USD10,00") it.
+# Explicit codes, not "any three capitals": the compact text glues security
+# names and WKNs ("Fund2,00DBX1EU") to amounts.
+_FOREIGN_CCY = (
+    "USD|GBP|GBX|CHF|JPY|CAD|AUD|NZD|SEK|NOK|DKK|PLN|CZK|HUF|RON|TRY"
+    "|HKD|SGD|CNY|CNH|INR|KRW|ZAR|BRL|MXN|ILS"
+)
 FOREIGN_CCY_RE = re.compile(
-    r"\d,\d+(?!EUR)([A-Z]{3})|(?<![A-Z])(?!EUR)([A-Z]{3})\d{1,3}(?:\.\d{3})*,\d"
+    rf"\d,\d+({_FOREIGN_CCY})(?![a-z])|(?<![A-Z])({_FOREIGN_CCY})\d{{1,3}}(?:\.\d{{3}})*,\d"
 )
 
 # Re-issued payouts are headed "Ertragsgutschrift / Neuabrechnung".
@@ -364,6 +370,12 @@ class DepotDocument:
         trade_date = _date(f"{day} {clock}", "%d.%m.%Y %H:%M:%S")
 
         if total == 0:
+            if not (is_buy and "SPARPLAN" in hdr.group(0)):
+                raise ParseError(
+                    0,
+                    f"{self.filename}: order {order_nr} books 0,00 EUR — only "
+                    "known for Sparplan purchases",
+                )
             # Sparplan executions are sometimes booked with 0,00 EUR and later
             # re-issued as "KAUF - KORREKTUR" with the same order number and
             # the real debit.  Emit nothing, so the correction is the only

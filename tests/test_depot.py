@@ -579,3 +579,21 @@ def test_income_kind_comes_from_the_header():
 def test_invalid_schlusstag_is_rejected():
     with pytest.raises(ParseError, match="invalid date"):
         _parse(DIVIDEND.replace("Schlusstag23.05.2023", "Schlusstag31.02.2023"))
+
+
+def test_security_names_next_to_amounts_are_not_currencies():
+    text = DIVIDEND.replace(
+        "XtrackersEuroStoxx50Inhaber-Anteile1Do.N. DBX1EU LU0274211217",
+        "Xtrackers Fund 2,00 DBX1EU LU0274211217",
+    )
+    _, stmt = _parse(text)
+    assert stmt.invest_lines[0].security_id == "LU0274211217"
+
+
+def test_zero_booked_sale_is_rejected():
+    text = SELL.replace(
+        "zugunstenKonto-Nr.0000099999 6.658,40EUR",
+        "zugunstenKonto-Nr.0000099999 0,00EUR",
+    )
+    with pytest.raises(ParseError, match="only known for Sparplan"):
+        _parse(text)
