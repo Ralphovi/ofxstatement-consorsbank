@@ -5,8 +5,8 @@
 ### Added
 - Depot documents are now converted to OFX investment statements
   (`INVSTMTRS`, account = Depotnummer, securities by ISIN):
-  Orderabrechnung KAUF/VERKAUF → `BUYSTOCK`/`SELLSTOCK` (`BUYDEBT`/`SELLDEBT`
-  for bonds), Ertragsgutschrift → `INCOME`/`DIV`, Zinsgutschrift →
+  Orderabrechnung KAUF/VERKAUF → `BUYSTOCK`/`SELLSTOCK` (bonds too: the
+  OFX writer cannot express debt securities), Ertragsgutschrift → `INCOME`/`DIV`, Zinsgutschrift →
   `INCOME`/`INTEREST`, Vorabpauschale → `INVEXPENSE` when tax was debited.
   Both the 2019/2020 and the current order layout are supported.
 - Stable FITIDs: orders use the order number; income and taxed

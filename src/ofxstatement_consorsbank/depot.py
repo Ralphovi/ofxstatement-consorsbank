@@ -19,7 +19,9 @@ Consorsbank depot (securities) documents → OFX investment statements.
 Each Consorsbank depot document describes exactly one event, so each parsed
 file yields a ``Statement`` with at most one ``InvestStatementLine``:
 
-  ORDERABRECHNUNG KAUF/VERKAUF   → BUYSTOCK/SELLSTOCK (BUYDEBT/SELLDEBT for bonds)
+  ORDERABRECHNUNG KAUF/VERKAUF   → BUYSTOCK/SELLSTOCK (bonds too: ofxstatement's
+                                   writer declares every security as STOCKINFO
+                                   and cannot write SELLDEBT's SELLREASON)
   Ertragsgutschrift              → INCOME / DIV
   Zinsgutschrift                 → INCOME / INTEREST
   Vorabpauschale                 → INVEXPENSE when tax was debited, else nothing
@@ -110,6 +112,7 @@ FOREIGN_CCY_RE = re.compile(r"\d,\d+(?!EUR)([A-Z]{3})")
 
 INCOME_HDR_RE = re.compile(r"(Ertragsgutschrift|Zinsgutschrift)")
 VORAB_HDR_RE = re.compile(r"VorabpauschaleWertpapierbezeichnung")
+KAPITALERTRAG_RE = re.compile(r"Kapitalertrag" + _AMT + r"EUR")
 BRUTTO_RE = re.compile(r"Brutto" + _AMT + r"EUR")
 NETTO_RE = re.compile(r"Netto(zugunsten|zulasten)IBAN(?:DE\d{20})?" + _AMT + r"EUR")
 VALUTA_RE = re.compile(r"Valuta" + _DATE)
@@ -134,13 +137,22 @@ def _dec(raw: str) -> Decimal:
     return Decimal(raw.replace(".", "").replace(",", "."))
 
 
-def _date(raw: str) -> datetime:
-    return datetime.strptime(raw, "%d.%m.%Y")
+def _date(raw: str, fmt: str = "%d.%m.%Y") -> datetime:
+    try:
+        return datetime.strptime(raw, fmt)
+    except ValueError as exc:
+        raise ParseError(0, f"invalid date {raw!r}") from exc
 
 
 def _qty_key(raw: str) -> str:
-    """Canonical form of a German quantity, so "143" == "143,00000"."""
-    return format(_dec(raw).normalize(), "f")
+    """Canonical form of a German quantity, so "143" == "143,00000".
+
+    Works on the digits (no Decimal context), so long values are not rounded.
+    """
+    whole, _, frac = raw.replace(".", "").partition(",")
+    whole = whole.lstrip("0") or "0"
+    frac = frac.rstrip("0")
+    return f"{whole}.{frac}" if frac else whole
 
 
 def _hash_id(*parts: str) -> str:
@@ -202,10 +214,12 @@ class DepotDocument:
         )
         stmt.broker_id = CONSORSBANK_BIC
         if line is not None:
-            # ofxstatement 0.9.x's assert_valid() rejects BUYDEBT/SELLDEBT
-            # (if/elif chain bug), so only validate the other types.
-            if not (line.trntype or "").endswith("DEBT"):
+            try:
                 line.assert_valid()
+            except AssertionError as exc:
+                raise ParseError(
+                    0, f"{self.filename}: invalid {line.trntype} line: {exc}"
+                ) from exc
             stmt.invest_lines.append(line)
             stmt.start_date = stmt.end_date = line.date
         return stmt
@@ -292,23 +306,32 @@ class DepotDocument:
             )
 
         is_bond = unit_kind == "EUR"
+        units = _dec(units_raw)
+        # Bonds are quoted in % of nominal; express the price per 1 EUR nominal
+        # so units × unit_price == Kurswert like for shares.
+        price = _dec(price_raw)
+        unit_price = price / 100 if price_unit == "%" else price
+        if abs(units * unit_price - kurswert) > Decimal("0.005"):
+            raise ParseError(
+                0,
+                f"{self.filename}: order {order_nr}: units × price "
+                f"{units * unit_price} does not match Kurswert {kurswert}",
+            )
 
         memo = f"{side} {name} ({wkn}) Order {order_nr}"
+        if is_bond:
+            memo += ", Anleihe (Nominal EUR)"
         if accrued:
             memo += f", Stückzins {accrued} EUR"
         if price_unit == "%":
             memo += f", Kurs {_dec(price_raw)} %"
 
-        if is_bond:
-            trntype, detailed = ("BUYDEBT" if is_buy else "SELLDEBT"), None
-        else:
-            trntype = "BUYSTOCK" if is_buy else "SELLSTOCK"
-            detailed = "BUY" if is_buy else "SELL"
+        trntype = "BUYSTOCK" if is_buy else "SELLSTOCK"
+        detailed = "BUY" if is_buy else "SELL"
 
-        units = _dec(units_raw)
         line = InvestStatementLine(
             id=f"ord{order_nr}",
-            date=datetime.strptime(f"{day} {clock}", "%d.%m.%Y %H:%M:%S"),
+            date=_date(f"{day} {clock}", "%d.%m.%Y %H:%M:%S"),
             memo=memo,
             trntype=trntype,
             trntype_detailed=detailed,
@@ -316,20 +339,10 @@ class DepotDocument:
             amount=-total if is_buy else total,
         )
         line.units = units if is_buy else -units
-        # Bonds are quoted in % of nominal; express the price per 1 EUR nominal
-        # so units × unit_price == Kurswert like for shares.
-        price = _dec(price_raw)
-        line.unit_price = price / 100 if price_unit == "%" else price
+        line.unit_price = unit_price
         line.fees = fees if fees > 0 else None
-        logger.info(
-            "Order %s: %s %s %s @ %s, total %s",
-            order_nr,
-            side,
-            units,
-            isin,
-            price,
-            total,
-        )
+        # No amounts, units or prices in logs (see README, "Debug logging").
+        logger.info("Order %s: %s %s", order_nr, side, isin)
         return line
 
     def _income(self) -> InvestStatementLine:
@@ -358,16 +371,25 @@ class DepotDocument:
             amount=netto,
         )
         line.fees = withheld if withheld > 0 else None
-        logger.info("%s %s: brutto %s, netto %s", kind, isin, brutto, netto)
+        logger.info("%s %s", kind, isin)
         return line
 
     def _vorab(self) -> InvestStatementLine | None:
         name, wkn, isin = self._security()
-        # 2020-era letters have no Netto line at all (nothing was booked).
+        # 2020-era letters have no Netto line at all; that is accepted only
+        # when they state a Kapitalertrag of 0,00 EUR (nothing was booked).
         m_netto = NETTO_RE.search(self.compact)
-        direction, netto = (
-            (m_netto.group(1), _dec(m_netto.group(2))) if m_netto else ("", Decimal(0))
-        )
+        if m_netto:
+            direction, netto = m_netto.group(1), _dec(m_netto.group(2))
+        else:
+            kap = self._require(KAPITALERTRAG_RE, "Netto or Kapitalertrag")
+            if _dec(kap.group(1)) != 0:
+                raise ParseError(
+                    0,
+                    f"{self.filename}: Vorabpauschale with Kapitalertrag but "
+                    "no Netto line",
+                )
+            direction, netto = "", Decimal(0)
         doc_date = _date(self._require(DOC_DATE_RE, "Datum").group(1))
         if netto == 0:
             logger.info(

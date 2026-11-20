@@ -37,10 +37,14 @@ identified by ISIN):
 
 | Document                         | OFX transaction                              |
 |----------------------------------|----------------------------------------------|
-| Orderabrechnung KAUF / VERKAUF   | `BUYSTOCK` / `SELLSTOCK` (`BUYDEBT` / `SELLDEBT` for bonds) |
+| Orderabrechnung KAUF / VERKAUF   | `BUYSTOCK` / `SELLSTOCK` (bonds too, memo "Anleihe") |
 | Ertragsgutschrift                | `INCOME` / `DIV` (withholding = Brutto − Netto) |
 | Zinsgutschrift (bond coupon)     | `INCOME` / `INTEREST`                        |
 | Vorabpauschale                   | `INVEXPENSE` if tax was debited, otherwise no transaction |
+
+Bonds are written as `BUYSTOCK` / `SELLSTOCK`: ofxstatement's OFX writer
+declares every security as `STOCKINFO` and cannot write the `SELLREASON` a
+`SELLDEBT` needs. Units are the nominal in EUR and the memo says "Anleihe".
 
 Fees are the sum of the fee lines (Grundgebühr, Provision,
 Handelsplatzkosten); Stückzins on bonds is kept out of the fees and noted in
@@ -67,8 +71,11 @@ A document is rejected (`ParseError`) instead of converted when:
 - the booking direction does not match the side (`KAUF` must be
   `zulasten`, `VERKAUF` `zugunsten`);
 - the depot number, or on income/Vorabpauschale the Bestand, is missing;
+- units × price differs from the Kurswert by more than half a cent;
+- a Vorabpauschale has no Netto line but a Kapitalertrag other than 0,00;
 - it contains amounts in a currency other than EUR (foreign-currency
-  orders and dividends are not supported yet).
+  orders and dividends are not supported yet);
+- the resulting line fails ofxstatement's own validation.
 
 ### Transaction types handled
 

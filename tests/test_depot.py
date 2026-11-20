@@ -228,7 +228,9 @@ def test_sell():
 def test_bond_buy():
     _, stmt = _parse(BOND)
     (line,) = stmt.invest_lines
-    assert line.trntype == "BUYDEBT" and line.trntype_detailed is None
+    # ofxstatement's writer can't express debt securities correctly.
+    assert line.trntype == "BUYSTOCK" and line.trntype_detailed == "BUY"
+    assert "Anleihe" in line.memo
     assert line.security_id == "DE0001135226"
     assert line.units == Decimal("1000.00000")
     assert line.unit_price == Decimal("1.18659")
@@ -288,7 +290,7 @@ def test_vorabpauschale_with_tax():
 def test_ofx_output_contains_invest_transactions():
     _, stmt = _parse(BOND)
     ofx = OfxWriter(stmt).toxml()
-    assert "<BUYDEBT>" in ofx
+    assert "<BUYSTOCK>" in ofx and "DEBT" not in ofx
     assert "<UNIQUEID>DE0001135226</UNIQUEID>" in ofx
     assert "<ACCTID>0000012345</ACCTID>" in ofx
 
@@ -397,3 +399,39 @@ def test_repeated_header_prefixes_stay_fast():
     start = time.perf_counter()
     DepotDocument(lines, "test.pdf").parse("order")
     assert time.perf_counter() - start < 2
+
+
+def test_units_must_match_kurswert():
+    with pytest.raises(ParseError, match="does not match Kurswert"):
+        _parse(ORDER_NEW.replace("ST 6,77371", "ST 7,77371"))
+
+
+def test_vorabpauschale_without_netto_needs_zero_kapitalertrag():
+    with pytest.raises(ParseError, match="Kapitalertrag"):
+        _parse(VORAB_2020.replace("Kapitalertrag 0,00EUR", "Kapitalertrag 5,00EUR"))
+    with pytest.raises(ParseError, match="Netto or Kapitalertrag"):
+        _parse(VORAB_2020.replace("Kapitalertrag 0,00EUR", ""))
+
+
+def test_long_quantities_are_not_rounded_in_ids():
+    a = "1," + "1" * 40
+    b = "1," + "1" * 39 + "2"
+    _, x = _parse(DIVIDEND.replace("318,19647", a))
+    _, y = _parse(DIVIDEND.replace("318,19647", b))
+    assert x.invest_lines[0].id != y.invest_lines[0].id
+
+
+def test_invalid_values_raise_parse_error():
+    with pytest.raises(ParseError):
+        _parse(ORDER_NEW.replace("UM09:30:21", "UM29:30:21"))
+    with pytest.raises(ParseError):
+        _parse(DIVIDEND.replace("50,00EUR", "0,00EUR").replace("56,03", "0,00"))
+
+
+def test_logs_carry_no_amounts(caplog):
+    with caplog.at_level("DEBUG"):
+        _parse(SELL)
+        _parse(DIVIDEND)
+    text = " ".join(r.getMessage() for r in caplog.records)
+    for amount in ("6658", "6681", "136", "49,125", "49.125", "56.03", "50.00"):
+        assert amount not in text
