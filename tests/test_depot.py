@@ -530,3 +530,21 @@ def test_second_booked_total_is_rejected():
 def test_netto_above_brutto_is_rejected():
     with pytest.raises(ParseError, match="exceeds Brutto"):
         _parse(DIVIDEND.replace("Brutto 56,03EUR", "Brutto 40,00EUR"))
+
+
+def test_periodic_depot_statement_is_left_to_bank_parser():
+    lines = ["QUARTALSDEPOTAUSZUG", "Wertpapierbezeichnung WKN ISIN"]
+    assert detect_depot_document(lines) is None
+
+
+@pytest.mark.parametrize("field", ["Brutto 56,03EUR", "Nettozugunsten IBAN"])
+def test_second_payout_field_is_rejected(field):
+    line = next(x for x in DIVIDEND.splitlines() if x.startswith(field))
+    with pytest.raises(ParseError, match="×"):
+        _parse(DIVIDEND + line + "\n")
+
+
+def test_vorabpauschale_with_two_netto_lines_is_rejected():
+    text = VORAB_ZERO + "Nettozulasten IBAN DE00760300800000099999 1,23EUR\n"
+    with pytest.raises(ParseError, match="× Netto"):
+        _parse(text)

@@ -123,6 +123,9 @@ INCOME_DETECT_RE = re.compile(
 # statements has them).  A document with these but no recognised header is
 # rejected rather than handed to the bank-statement parser.
 DEPOT_MARKER_RE = re.compile(r"ORDERABRECHNUNG|Wertpapierbezeichnung")
+# Periodic depot statements stay with the bank parser, which warns and
+# returns no transactions for them.
+PERIODIC_DEPOT_RE = re.compile(r"QUARTALSDEPOTAUSZUG|JAHRESDEPOTAUSZUG")
 ORDER_DETECT_RE = re.compile(r"ORDERABRECHNUNG(?:KAUF|VERKAUF)(?:-?KORREKTUR)?AM\d")
 VORAB_HDR_RE = re.compile(r"VorabpauschaleWertpapierbezeichnung")
 KAPITALERTRAG_RE = re.compile(r"Kapitalertrag" + _AMT + r"EUR")
@@ -185,7 +188,7 @@ def detect_depot_document(lines: list[str]) -> str | None:
         return "vorab"
     if INCOME_DETECT_RE.search(compact):
         return "income"
-    if DEPOT_MARKER_RE.search(compact):
+    if DEPOT_MARKER_RE.search(compact) and not PERIODIC_DEPOT_RE.search(compact):
         raise ParseError(
             0, "looks like a depot document, but its layout is not recognised"
         )
@@ -201,6 +204,15 @@ class DepotDocument:
         self.filename = filename
 
     # ── helpers ────────────────────────────────────────────────────────────
+
+    def _require_unique(self, regex: re.Pattern[str], what: str) -> re.Match[str]:
+        """Like _require, but a second match (two payouts in one file) fails."""
+        matches = list(regex.finditer(self.compact))
+        if len(matches) > 1:
+            raise ParseError(0, f"{self.filename}: {len(matches)} × {what}")
+        if not matches:
+            raise ParseError(0, f"{self.filename}: could not find {what}")
+        return matches[0]
 
     def _require(self, regex: re.Pattern[str], what: str) -> re.Match[str]:
         m = regex.search(self.compact)
@@ -389,8 +401,8 @@ class DepotDocument:
     def _income(self) -> InvestStatementLine:
         kind = self._require(INCOME_HDR_RE, "Ertrags-/Zinsgutschrift").group(1)
         name, wkn, isin = self._security()
-        brutto = _dec(self._require(BRUTTO_RE, "Brutto").group(1))
-        direction, netto_raw = self._require(NETTO_RE, "Netto").groups()
+        brutto = _dec(self._require_unique(BRUTTO_RE, "Brutto").group(1))
+        direction, netto_raw = self._require_unique(NETTO_RE, "Netto").groups()
         if direction != "zugunsten":
             raise ParseError(
                 0, f"{self.filename}: {kind} with Netto zulasten is not supported"
@@ -426,7 +438,10 @@ class DepotDocument:
         name, wkn, isin = self._security()
         # 2020-era letters have no Netto line at all; that is accepted only
         # when they state a Kapitalertrag of 0,00 EUR (nothing was booked).
-        m_netto = NETTO_RE.search(self.compact)
+        nettos = list(NETTO_RE.finditer(self.compact))
+        if len(nettos) > 1:
+            raise ParseError(0, f"{self.filename}: {len(nettos)} × Netto")
+        m_netto = nettos[0] if nettos else None
         if m_netto:
             direction, netto = m_netto.group(1), _dec(m_netto.group(2))
         else:
