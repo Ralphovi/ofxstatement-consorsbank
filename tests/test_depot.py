@@ -614,3 +614,32 @@ def test_invalid_isin_check_digit_is_rejected():
 def test_amounts_not_marked_eur_are_not_read(old, new):
     with pytest.raises(ParseError):
         _parse(SELL.replace(old, new))
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("ST 6,77371", "ST 6," + "7" * 1_000_000),
+        ("ST 6,77371", "ST 999.999.999.999.999,77371"),
+        ("43,815000EUR", "43,8150000000EUR"),
+        ("Kurswert 296,79EUR", "Kurswert 9" + ".999" * 12 + ",79EUR"),
+    ],
+)
+def test_numbers_out_of_range_are_rejected(old, new):
+    with pytest.raises(ParseError, match="out of range"):
+        _parse(ORDER_NEW.replace(old, new))
+
+
+def test_control_characters_in_security_name_are_rejected():
+    with pytest.raises(ParseError, match="control characters"):
+        _parse(ORDER_NEW.replace("XTR.EUROSTOXX501D", "XTR.EURO\x01STOXX501D"))
+
+
+def test_eleven_digit_depot_number_is_rejected():
+    with pytest.raises(ParseError, match="Depotnummer"):
+        _parse(ORDER_NEW.replace("0000012345", "00000123456"))
+
+
+def test_payout_ids_use_128_bits():
+    _, stmt = _parse(DIVIDEND)
+    assert len(stmt.invest_lines[0].id) == 32
