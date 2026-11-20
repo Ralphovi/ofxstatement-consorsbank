@@ -39,6 +39,7 @@ from ofxstatement.plugin import Plugin
 from ofxstatement.statement import Statement, StatementLine
 
 from ofxstatement_consorsbank import plugin_version
+from ofxstatement_consorsbank.depot import DepotDocument, detect_depot_document
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,14 @@ class ConsorsParser(StatementParser[str]):
                 logger.debug("  Page %d/%d: %d lines", i, n_pages, len(page_lines))
                 all_lines.extend(page_lines)
         logger.info("PDF: %d page(s), %d lines total", n_pages, len(all_lines))
+
+        depot_kind = detect_depot_document(all_lines)
+        if depot_kind:
+            logger.info("Detected depot document: %s", depot_kind)
+            stmt = DepotDocument(all_lines, self.fin).parse(depot_kind)
+            self.statement = stmt
+            logger.info("Done: %d investment transaction(s)", len(stmt.invest_lines))
+            return stmt
 
         self._parse_header(all_lines)
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Depot documents are now converted to OFX investment statements
+  (`INVSTMTRS`, account = Depotnummer, securities by ISIN):
+  Orderabrechnung KAUF/VERKAUF → `BUYSTOCK`/`SELLSTOCK` (bonds too: the
+  OFX writer cannot express debt securities), Ertragsgutschrift → `INCOME`/`DIV`, Zinsgutschrift →
+  `INCOME`/`INTEREST`, Vorabpauschale → `INVEXPENSE` when tax was debited.
+  Both the 2019/2020 and the current order layout are supported.
+- Stable FITIDs: orders use the order number; income and taxed
+  Vorabpauschale use ISIN + Schlusstag + canonical Bestand (`143` and
+  `143,00000` are equal; payouts for separate custody positions stay
+  distinct). An order booked with 0,00 EUR yields no transaction, so its
+  later `KAUF - KORREKTUR` is the only one.
+- Fail-closed checks: the booked total must equal Kurswert ± Stückzins ± fee
+  lines (fees are no longer the remainder, so a deducted tax is rejected
+  instead of reported as a fee); booking direction must match KAUF/VERKAUF;
+  depot number, Bestand and (income/Vorabpauschale) Schlusstag are
+  required; non-EUR documents, income booked zulasten, credited
+  Vorabpauschale and units/prices beyond 5 decimals are rejected; units ×
+  price must match the Kurswert.
+
 ## [0.2.4] - 2026-05-08
 
 ### Developer tooling

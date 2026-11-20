@@ -29,6 +29,80 @@ Quarterly and annual depot statements (`QUARTALSDEPOTAUSZUG`,
 `JAHRESDEPOTAUSZUG`) have a different format and are not supported — the
 plugin will log a clear warning and produce no transactions for those files.
 
+### Depot documents (investment transactions)
+
+Single-event depot documents are detected automatically and converted to an
+OFX **investment** statement (`INVSTMTRS`, account = Depotnummer, securities
+identified by ISIN):
+
+| Document                         | OFX transaction                              |
+|----------------------------------|----------------------------------------------|
+| Orderabrechnung KAUF / VERKAUF   | `BUYSTOCK` / `SELLSTOCK` (bonds too, memo "Anleihe") |
+| Ertragsgutschrift                | `INCOME` / `DIV` (withholding = Brutto − Netto) |
+| Zinsgutschrift (bond coupon)     | `INCOME` / `INTEREST`                        |
+| Vorabpauschale                   | `INVEXPENSE` if tax was debited, otherwise no transaction |
+
+Securities are identified by ISIN in `<UNIQUEID>`. ofxstatement's writer
+always labels it `<UNIQUEIDTYPE>TICKER</UNIQUEIDTYPE>`; a plugin cannot
+change that, so importers should match on the value.
+
+Bonds are written as `BUYSTOCK` / `SELLSTOCK`: ofxstatement's OFX writer
+declares every security as `STOCKINFO` and cannot write the `SELLREASON` a
+`SELLDEBT` needs. Units are the nominal in EUR and the memo says "Anleihe".
+
+Fees are the sum of the fee lines (Grundgebühr, Provision,
+Handelsplatzkosten); Stückzins on bonds is kept out of the fees and noted in
+the memo. Bond prices are given per 1 EUR nominal, so `units × unit_price`
+equals the Kurswert.
+
+Transaction IDs: orders use the Consorsbank order number; income and taxed
+Vorabpauschale use a hash of ISIN + Schlusstag + Bestand, so payouts for the
+same fund held in different custody locations stay distinct (unless both
+positions hold exactly the same quantity). Importing the
+same document twice yields the same FITID, which importers skip.
+
+Re-issued orders: Consorsbank has booked some Sparplan executions with
+0,00 EUR and later sent a `KAUF - KORREKTUR` with the same order number and
+the real debit. The 0,00 document yields **no** transaction (a warning is
+logged), so the correction is the only transaction for that order, whatever
+the import order. A re-issued document whose content differs from one
+already imported (not observed so far) is skipped by FITID-deduplicating
+importers; check the warning log and your depot balances.
+
+Re-issued payouts are headed `Ertragsgutschrift / Neuabrechnung` and keep
+the payout's FITID (ISIN + Schlusstag + Bestand, not the amount). Since 2024
+Consorsbank has issued 11 of 23 Ertragsgutschriften this way, and its
+archive holds only the Neuabrechnung, not the original. Two payouts of the
+same kind, ISIN, Schlusstag and Bestand would share a FITID.
+
+A document that contains `ORDERABRECHNUNG` or `Wertpapierbezeichnung` but
+no recognised header is rejected rather than parsed as a bank statement.
+
+A document is rejected (`ParseError`) instead of converted when:
+- a field it reads (order header, depot number, security, Kurswert, units,
+  price, Schlusstag, Bestand, Datum, Valuta, …) appears with different
+  values, or it has more than one booked total / Brutto / Netto;
+- income has Netto above Brutto;
+- the booked total is not Kurswert ± Stückzins ± the fee lines — for
+  example a sale with Kapitalertragsteuer deducted;
+- the booking direction does not match the side (`KAUF` must be
+  `zulasten`, `VERKAUF` `zugunsten`);
+- the depot number, or on income/Vorabpauschale the Bestand or Schlusstag,
+  is missing;
+- income is booked `Netto zulasten`, or a Vorabpauschale is credited
+  (`Netto zugunsten` other than 0,00);
+- units or prices have more decimals than the OFX writer keeps (5);
+- units × price differs from the Kurswert by more than half a cent;
+- a Vorabpauschale has no Netto line but a Kapitalertrag other than 0,00;
+- an amount it needs is not marked EUR (every amount read — Kurswert,
+  price, fees, Stückzins, total, Brutto, Netto — must carry EUR), a fee
+  line cannot be read, or the document shows amounts in a common foreign
+  currency (USD, GBP, CHF, JPY, …); foreign-currency orders and dividends
+  are not supported yet;
+- the ISIN check digit is wrong;
+- an order other than a Sparplan purchase books 0,00 EUR;
+- the resulting line fails ofxstatement's own validation.
+
 ### Transaction types handled
 
 Entries marked ★ are confirmed against real statements (2016–2026).
