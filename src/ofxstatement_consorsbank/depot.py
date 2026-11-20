@@ -92,7 +92,9 @@ ORDER_HDR_RE = re.compile(
 )
 UNITS_RE = re.compile(r"EinheitUmsatz(?:Fälligkeit)?(ST|EUR)" + _NUM)
 PRICE_RE = re.compile(r"(?:Kurs|PreisproAnteil)" + _NUM + r"(EUR|%)")
-KURSWERT_RE = re.compile(r"Kurswert(?:EUR)?" + _AMT)
+# Every amount that is read must be marked EUR, before (2019/2020 layout) or
+# after it; an amount in another currency then simply does not match.
+KURSWERT_RE = re.compile(r"Kurswert(?:EUR" + _AMT + r"|" + _AMT + r"EUR)")
 # Newer layout: "zulasten Konto-Nr. 0700880049   1.240,44 EUR"
 TOTAL_NEW_RE = re.compile(r"zu(lasten|gunsten)Konto-Nr\.\d{10}" + _AMT + r"EUR")
 # 2019/2020 layout: "Wert 03.10.2019   EUR 150,00" then "zulasten Konto-Nr. …"
@@ -103,10 +105,15 @@ STUECKZINS_RE = re.compile(r"Stückzins.{0,80}?Tage" + _AMT + r"EUR")
 # Fee lines between Kurswert and the booked total; "EUR" before (2019/2020
 # layout) or after the amount.
 FEE_RE = re.compile(
-    r"(?:abzgl\.)?(Grundgebühr|Provision|Handelsplatzkosten)(?:EUR)?"
+    r"(?:abzgl\.)?(Grundgebühr|Provision|Handelsplatzkosten)(?:EUR"
     + _AMT
-    + r"(?:EUR)?"
+    + r"|"
+    + _AMT
+    + r"EUR)"
 )
+# Fee-like labels: a fee line that FEE_RE cannot read (other currency, new
+# label spelling) must not vanish silently.
+FEE_LABEL_RE = re.compile(r"Grundgebühr|Provision|Handelsplatzkosten")
 # An amount directly followed by a currency code other than EUR.
 # An amount with a currency code other than EUR directly after ("10,00USD")
 # or before ("USD10,00") it.
@@ -176,6 +183,16 @@ def _qty_key(raw: str) -> str:
     whole = whole.lstrip("0") or "0"
     frac = frac.rstrip("0")
     return f"{whole}.{frac}" if frac else whole
+
+
+def _isin_ok(isin: str) -> bool:
+    """ISO 6166 check digit (Luhn over the letters-as-numbers expansion)."""
+    digits = "".join(str(int(c, 36)) for c in isin[:-1])
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        n = int(d) * (2 if i % 2 == 0 else 1)
+        total += n // 10 + n % 10
+    return (10 - total % 10) % 10 == int(isin[-1])
 
 
 def _hash_id(*parts: str) -> str:
@@ -258,7 +275,10 @@ class DepotDocument:
             raise ParseError(
                 0, f"{self.filename}: security name/WKN/ISIN row not found"
             )
-        return found.pop()
+        name, wkn, isin = found.pop()
+        if not _isin_ok(isin):
+            raise ParseError(0, f"{self.filename}: invalid ISIN check digit")
+        return name, wkn, isin
 
     def _bestand(self) -> tuple[str, str]:
         """(canonical quantity, unit) of the holding the document refers to."""
@@ -312,10 +332,9 @@ class DepotDocument:
             UNITS_RE, "units (Einheit/Umsatz)"
         ).groups()
         price_raw, price_unit = self._require(PRICE_RE, "price").groups()
-        kurswert = _dec(self._require(KURSWERT_RE, "Kurswert").group(1))
-
         m_kw = self._require(KURSWERT_RE, "Kurswert")
-        assert m_kw is not None  # found by _require above
+        kurswert = _dec(m_kw.group(1) or m_kw.group(2))
+
         totals = list(TOTAL_NEW_RE.finditer(self.compact)) + list(
             TOTAL_OLD_RE.finditer(self.compact)
         )
@@ -394,7 +413,12 @@ class DepotDocument:
             accrued = _dec(m_sz.group(1))
 
         fee_area = self.compact[m_kw.end() : total_at]
-        fees = sum((_dec(m.group(2)) for m in FEE_RE.finditer(fee_area)), Decimal(0))
+        fee_lines = list(FEE_RE.finditer(fee_area))
+        if len(fee_lines) != len(FEE_LABEL_RE.findall(fee_area)):
+            raise ParseError(
+                0, f"{self.filename}: order {order_nr}: unreadable fee line"
+            )
+        fees = sum((_dec(m.group(2) or m.group(3)) for m in fee_lines), Decimal(0))
         expected = kurswert + accrued + fees if is_buy else kurswert + accrued - fees
         if expected != total:
             raise ParseError(

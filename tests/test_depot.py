@@ -597,3 +597,20 @@ def test_zero_booked_sale_is_rejected():
     )
     with pytest.raises(ParseError, match="only known for Sparplan"):
         _parse(text)
+
+
+def test_invalid_isin_check_digit_is_rejected():
+    with pytest.raises(ParseError, match="ISIN"):
+        _parse(ORDER_NEW.replace("LU0274211217", "LU0274211218"))
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("Kurswert 6.681,00EUR", "Kurswert 6.681,00AED"),
+        ("abzgl.Provision 16,70EUR", "abzgl.Provision 16,70AED"),
+    ],
+)
+def test_amounts_not_marked_eur_are_not_read(old, new):
+    with pytest.raises(ParseError):
+        _parse(SELL.replace(old, new))

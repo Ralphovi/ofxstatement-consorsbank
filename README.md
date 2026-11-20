@@ -42,6 +42,10 @@ identified by ISIN):
 | Zinsgutschrift (bond coupon)     | `INCOME` / `INTEREST`                        |
 | Vorabpauschale                   | `INVEXPENSE` if tax was debited, otherwise no transaction |
 
+Securities are identified by ISIN in `<UNIQUEID>`. ofxstatement's writer
+always labels it `<UNIQUEIDTYPE>TICKER</UNIQUEIDTYPE>`; a plugin cannot
+change that, so importers should match on the value.
+
 Bonds are written as `BUYSTOCK` / `SELLSTOCK`: ofxstatement's OFX writer
 declares every security as `STOCKINFO` and cannot write the `SELLREASON` a
 `SELLDEBT` needs. Units are the nominal in EUR and the memo says "Anleihe".
@@ -90,8 +94,12 @@ A document is rejected (`ParseError`) instead of converted when:
 - units or prices have more decimals than the OFX writer keeps (5);
 - units × price differs from the Kurswert by more than half a cent;
 - a Vorabpauschale has no Netto line but a Kapitalertrag other than 0,00;
-- it contains amounts in a listed foreign currency (USD, GBP, CHF, JPY, …;
-  foreign-currency orders and dividends are not supported yet);
+- an amount it needs is not marked EUR (every amount read — Kurswert,
+  price, fees, Stückzins, total, Brutto, Netto — must carry EUR), a fee
+  line cannot be read, or the document shows amounts in a common foreign
+  currency (USD, GBP, CHF, JPY, …); foreign-currency orders and dividends
+  are not supported yet;
+- the ISIN check digit is wrong;
 - an order other than a Sparplan purchase books 0,00 EUR;
 - the resulting line fails ofxstatement's own validation.
 
