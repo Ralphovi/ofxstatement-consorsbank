@@ -54,7 +54,7 @@ import hashlib
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 
 from ofxstatement.exceptions import ParseError
 from ofxstatement.statement import InvestStatementLine, Statement
@@ -151,7 +151,10 @@ BESTAND_RE = re.compile(r"Bestand(?:Kupontag)?" + _QTY + r"(Stück|EUR)")
 _OFX_QUANTUM = Decimal("0.00001")
 # pdfplumber lines longer than this are boilerplate, never the security row.
 _MAX_SECURITY_ROW = 200
-DEPOT_NR_RE = re.compile(r"Depotnummer:?(\d{10})")
+# Matched on the newline-preserving text: the next line starts with digits,
+# which the compact text glues straight onto the number.  \s* still allows
+# the value on the line after the label.
+DEPOT_NR_RE = re.compile(r"Depotnummer:?\s*(\d{10})(?!\d)")
 
 SECURITY_ROW_RE = re.compile(r"^(.*?)\s+(\S{6})\s+([A-Z]{2}[A-Z0-9]{9}\d)\s*$")
 SECURITY_HDR_RE = re.compile(r"bezeichnung\s+WKN\s+ISIN", re.IGNORECASE)
@@ -163,8 +166,21 @@ def _clean(text: str) -> str:
     return text
 
 
+# Real documents print at most 5 integer and 6 decimal digits.  The limits
+# keep crafted numbers away from Decimal arithmetic (overflow, huge operands)
+# and leave every product and quantize() well inside the 28-digit context.
+_MAX_INT_DIGITS = 12
+_MAX_FRAC_DIGITS = 8
+
+# Characters XML 1.0 does not allow; the OFX writer raises on them.
+_XML_ILLEGAL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff\ud800-\udfff]")
+
+
 def _dec(raw: str) -> Decimal:
-    return Decimal(raw.replace(".", "").replace(",", "."))
+    whole, _, frac = raw.replace(".", "").partition(",")
+    if len(whole.lstrip("0")) > _MAX_INT_DIGITS or len(frac) > _MAX_FRAC_DIGITS:
+        raise ParseError(0, f"number out of range ({len(raw)} characters)")
+    return Decimal(f"{whole}.{frac}" if frac else whole)
 
 
 def _date(raw: str, fmt: str = "%d.%m.%Y") -> datetime:
@@ -196,7 +212,7 @@ def _isin_ok(isin: str) -> bool:
 
 
 def _hash_id(*parts: str) -> str:
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 def detect_depot_document(lines: list[str]) -> str | None:
@@ -276,6 +292,10 @@ class DepotDocument:
                 0, f"{self.filename}: security name/WKN/ISIN row not found"
             )
         name, wkn, isin = found.pop()
+        if _XML_ILLEGAL_RE.search(name + wkn):
+            raise ParseError(
+                0, f"{self.filename}: control characters in security name/WKN"
+            )
         if not _isin_ok(isin):
             raise ParseError(0, f"{self.filename}: invalid ISIN check digit")
         return name, wkn, isin
@@ -286,9 +306,13 @@ class DepotDocument:
         return _qty_key(qty), unit
 
     def _statement(self, line: InvestStatementLine | None) -> Statement:
-        m = self._require(DEPOT_NR_RE, "Depotnummer")
+        numbers = {m.group(1) for m in DEPOT_NR_RE.finditer("\n".join(self.lines))}
+        if len(numbers) > 1:
+            raise ParseError(0, f"{self.filename}: conflicting values for Depotnummer")
+        if not numbers:
+            raise ParseError(0, f"{self.filename}: could not find Depotnummer")
         stmt = Statement(
-            account_id=m.group(1),
+            account_id=numbers.pop(),
             bank_id=CONSORSBANK_BIC,
             currency="EUR",
             account_type="INVESTMENT",
@@ -316,13 +340,13 @@ class DepotDocument:
                 "EUR depot "
                 "documents are supported",
             )
-        if kind == "order":
-            return self._statement(self._order())
-        if kind == "income":
-            return self._statement(self._income())
-        if kind == "vorab":
-            return self._statement(self._vorab())
-        raise ValueError(kind)
+        parsers = {"order": self._order, "income": self._income, "vorab": self._vorab}
+        if kind not in parsers:
+            raise ValueError(kind)
+        try:
+            return self._statement(parsers[kind]())
+        except DecimalException as exc:
+            raise ParseError(0, f"{self.filename}: numeric error: {exc!r}") from exc
 
     def _order(self) -> InvestStatementLine | None:
         hdr = self._require(ORDER_HDR_RE, "order header (KAUF/VERKAUF AM …)")

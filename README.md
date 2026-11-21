@@ -56,7 +56,7 @@ the memo. Bond prices are given per 1 EUR nominal, so `units × unit_price`
 equals the Kurswert.
 
 Transaction IDs: orders use the Consorsbank order number; income and taxed
-Vorabpauschale use a hash of ISIN + Schlusstag + Bestand, so payouts for the
+Vorabpauschale use a 128-bit hash of ISIN + Schlusstag + Bestand, so payouts for the
 same fund held in different custody locations stay distinct (unless both
 positions hold exactly the same quantity). Importing the
 same document twice yields the same FITID, which importers skip.
